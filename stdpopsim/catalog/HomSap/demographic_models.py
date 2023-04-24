@@ -2031,7 +2031,7 @@ def _ooa_archaic_plus_american():
     # the growth rates provided for these two populations
     r_CEU = 0.00125
     r_CHB = 0.00372
-    r_AMR = 0.00000
+    r_AMR = 0.05
     N_CEU = N_CEU0 / math.exp(-r_CEU * T_EU_AS)
     N_CHB = N_CHB0 / math.exp(-r_CHB * T_EU_AS)
     N_AMR = N_AMR0 / math.exp(-r_AMR * T_amr_adm)
