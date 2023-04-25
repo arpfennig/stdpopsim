@@ -2155,3 +2155,225 @@ def _ooa_archaic_plus_american():
 
 
 _species.add_demographic_model(_ooa_archaic_plus_american())
+
+
+def _ooa_archaic_plus_constant_american():
+    id = "OutOfAfricaArchaicPlusConstantAmericanAdmixture"
+    description = "Three population out-of-Africa with archaic admixture plus constant admixture in the Americas"
+    long_description = """
+        The three population out-of-African model popularized by Gutenkunst et al. (2009)
+        and augmented by archaic contributions to both Eurasian and African populations 
+        and more recent, constant admixture in the Americas.
+        Two archaic populations split early in human history, before the African
+        expansion, and contribute to Eurasian populations (putative Neanderthal branch)
+        and to the African branch (a deep diverging branch within Africa). Admixture
+        is modeled as symmetric migration between the archaic and modern human branches,
+        with contribution ending at a given time in the past. 
+        Additionally, recent, constant admixture in the Americas is simulated. The initital admixture pulse is 
+        simulated with 80% contributions from African populations, 19% contributions from European populations, 
+        and 1% contributions from East Asian populations. This is an extended version of the 
+        OutOfAfricaArchaicAdmixture_5R19 model by Ragsdale et al.
+    """
+    populations = [
+        _yri_population,
+        _ceu_population,
+        _chb_population,
+        stdpopsim.Population(
+            "Neanderthal", "Putative Neanderthals", sampling_time=None
+        ),
+        stdpopsim.Population(
+            "ArchaicAFR", "Putative Archaic Africans", sampling_time=None
+        ),
+        stdpopsim.Population(
+            "American", "Recently Admixed American population"
+        )
+    ]
+    citations = [
+        stdpopsim.Citation(
+            author="Ragsdale and Gravel",
+            year=2019,
+            doi="https://doi.org/10.1371/journal.pgen.1008204",
+            reasons={stdpopsim.CiteReason.DEM_MODEL},
+        )
+    ]
+
+    # First we set out the maximum likelihood values of the various parameters
+    # given in Table 1 (under archaic admixture).
+    N_0 = 3600
+    N_YRI = 13900
+    N_B = 880
+    N_CEU0 = 2300
+    N_CHB0 = 650
+    N_AMR0 = 30000 # Initial size of American population from Browning et al.
+
+    # Times are provided in years, so we convert into generations.
+    # In the published model, the authors used a generation time of 29 years to
+    # convert from genetic to physical units
+    generation_time = 29
+    # calibration of this demographic model used the recombination instead of mutation
+    # rate - as such, levels of diversity using the species default rate may not match
+    # expectations or observations in human data
+    mutation_rate = None
+
+    T_AF = 300e3 / generation_time
+    T_B = 60.7e3 / generation_time
+    T_EU_AS = 36.0e3 / generation_time
+    T_arch_afr_split = 499e3 / generation_time
+    T_arch_afr_mig = 125e3 / generation_time
+    T_nean_split = 559e3 / generation_time
+    T_arch_adm_end = 18.7e3 / generation_time
+    T_amr_adm = 435 / generation_time # American admixture 15 generations ago assuming a generation time of 29y
+
+    # We need to work out the starting (diploid) population sizes based on
+    # the growth rates provided for these two populations
+    r_CEU = 0.00125
+    r_CHB = 0.00372
+    r_AMR = 0.05
+    N_CEU = N_CEU0 / math.exp(-r_CEU * T_EU_AS)
+    N_CHB = N_CHB0 / math.exp(-r_CHB * T_EU_AS)
+    N_AMR = N_AMR0 / math.exp(-r_AMR * T_amr_adm)
+
+    # Migration rates during the various epochs.
+    m_AF_B = 52.2e-5
+    m_YRI_CEU = 2.48e-5
+    m_YRI_CHB = 0e-5
+    m_CEU_CHB = 11.3e-5
+    m_AF_arch_af = 1.98e-5
+    m_OOA_nean = 0.825e-5
+    m_AMR_CHB = 0.000625
+    m_AMR_CEU = 0.011875
+    m_AMR_YRI = 0.05
+    # Population IDs correspond to their indexes in the population
+    # configuration array. Therefore, we have 0=YRI, 1=CEU and 2=CHB
+    # initially.
+    # We also have two archaic populations, putative Neanderthals and
+    # archaicAfrican, which are population indices 3=Nean and 4=arch_afr.
+    # Their sizes are equal to the ancestral reference population size N_0.
+    # Lastly, we have the admixed American population (5=AMR).
+    population_configurations = [
+        msprime.PopulationConfiguration(
+            initial_size=N_YRI, metadata=populations[0].asdict()
+        ),
+        msprime.PopulationConfiguration(
+            initial_size=N_CEU, growth_rate=r_CEU, metadata=populations[1].asdict()
+        ),
+        msprime.PopulationConfiguration(
+            initial_size=N_CHB, growth_rate=r_CHB, metadata=populations[2].asdict()
+        ),
+        msprime.PopulationConfiguration(
+            initial_size=N_0, metadata=populations[3].asdict()
+        ),
+        msprime.PopulationConfiguration(
+            initial_size=N_0, metadata=populations[4].asdict()
+        ),
+        msprime.PopulationConfiguration(
+            initial_size=N_AMR, growth_rate=r_AMR, metadata=populations[5].asdict()
+        ),
+    ]
+    migration_matrix = [  # noqa
+        [0, m_YRI_CEU, m_YRI_CHB, 0, 0, 0],  # noqa
+        [m_YRI_CEU, 0, m_CEU_CHB, 0, 0, 0],  # noqa
+        [m_YRI_CHB, m_CEU_CHB, 0, 0, 0, 0],  # noqa
+        [0, 0, 0, 0, 0, 0],  # noqa
+        [0, 0, 0, 0, 0, 0],  # noqa
+        [m_AMR_YRI, m_AMR_CEU, m_AMR_CHB, 0, 0, 0],  # noqa
+    ]  # noqa
+    migration_rate_changes_amr = []
+    for i in range(int(T_amr_adm)):
+        c_N_AMR = N_AMR0 / math.exp(-r_AMR * (T_amr_adm - i))
+        migration_rate_changes_amr.append(msprime.MigrationRateChange(time=i, matrix_index=(5, 0),
+                                                                      rate=math.floor(c_N_AMR *
+                                                                                      0.1 * 0.8) / N_YRI))
+        migration_rate_changes_amr.append(msprime.MigrationRateChange(time=i, matrix_index=(5, 1),
+                                                                      rate=math.floor(c_N_AMR *
+                                                                                      0.1 * 0.19) / (N_CEU0 /
+                                                                                                     math.exp(-r_CEU *
+                                                                                                              (T_EU_AS -
+                                                                                                               i)))))
+        migration_rate_changes_amr.append(msprime.MigrationRateChange(time=i, matrix_index=(5, 2),
+                                                                      rate=math.floor(c_N_AMR *
+                                                                                      0.1 * 0.01) / (N_CHB0 /
+                                                                                                     math.exp(-r_CHB *
+                                                                                                              (T_EU_AS -
+                                                                                                               i)))))
+    demographic_events = [
+        *migration_rate_changes_amr,
+        # American population merges into YRI (0.8), CEU (0.19), and CHB (0.01)
+        msprime.MassMigration(time=T_amr_adm, source=5, destination=0, proportion=0.8),
+        msprime.MassMigration(time=T_amr_adm, source=5, destination=1, proportion=0.95),
+        msprime.MassMigration(time=T_amr_adm, source=5, destination=2, proportion=1),
+        msprime.MigrationRateChange(time=T_amr_adm, source=5, dest=0, rate=0),
+        msprime.MigrationRateChange(time=T_amr_adm, source=5, dest=1, rate=0),
+        msprime.MigrationRateChange(time=T_amr_adm, source=5, dest=2, rate=0),
+
+        # first event is migration turned on between modern and archaic humans
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_AF_arch_af, matrix_index=(0, 4)
+        ),
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_AF_arch_af, matrix_index=(4, 0)
+        ),
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_OOA_nean, matrix_index=(1, 3)
+        ),
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_OOA_nean, matrix_index=(3, 1)
+        ),
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_OOA_nean, matrix_index=(2, 3)
+        ),
+        msprime.MigrationRateChange(
+            time=T_arch_adm_end, rate=m_OOA_nean, matrix_index=(3, 2)
+        ),
+        # CEU and CHB merge into B with rate changes at T_EU_AS
+        msprime.MassMigration(time=T_EU_AS, source=2, destination=1, proportion=1.0),
+        msprime.MigrationRateChange(time=T_EU_AS, rate=0),
+        msprime.MigrationRateChange(time=T_EU_AS, rate=m_AF_B, matrix_index=(0, 1)),
+        msprime.MigrationRateChange(time=T_EU_AS, rate=m_AF_B, matrix_index=(1, 0)),
+        msprime.MigrationRateChange(
+            time=T_EU_AS, rate=m_AF_arch_af, matrix_index=(0, 4)
+        ),
+        msprime.MigrationRateChange(
+            time=T_EU_AS, rate=m_AF_arch_af, matrix_index=(4, 0)
+        ),
+        msprime.MigrationRateChange(time=T_EU_AS, rate=m_OOA_nean, matrix_index=(1, 3)),
+        msprime.MigrationRateChange(time=T_EU_AS, rate=m_OOA_nean, matrix_index=(3, 1)),
+        msprime.PopulationParametersChange(
+            time=T_EU_AS, initial_size=N_B, growth_rate=0, population_id=1
+        ),
+        # Population B merges into YRI at T_B
+        msprime.MassMigration(time=T_B, source=1, destination=0, proportion=1.0),
+        msprime.MigrationRateChange(time=T_B, rate=0),
+        msprime.MigrationRateChange(time=T_B, rate=m_AF_arch_af, matrix_index=(0, 4)),
+        msprime.MigrationRateChange(time=T_B, rate=m_AF_arch_af, matrix_index=(4, 0)),
+        # Beginning of migration between African and archaic African populations
+        msprime.MigrationRateChange(time=T_arch_afr_mig, rate=0),
+        # Size changes to N_0 at T_AF
+        msprime.PopulationParametersChange(
+            time=T_AF, initial_size=N_0, population_id=0
+        ),
+        # Archaic African merges with moderns
+        msprime.MassMigration(
+            time=T_arch_afr_split, source=4, destination=0, proportion=1.0
+        ),
+        # Neanderthal merges with moderns
+        msprime.MassMigration(
+            time=T_nean_split, source=3, destination=0, proportion=1.0
+        ),
+    ]
+
+    return stdpopsim.DemographicModel(
+        id=id,
+        description=description,
+        long_description=long_description,
+        populations=populations,
+        citations=citations,
+        generation_time=generation_time,
+        mutation_rate=mutation_rate,
+        population_configurations=population_configurations,
+        migration_matrix=migration_matrix,
+        demographic_events=demographic_events,
+    )
+
+
+_species.add_demographic_model(_ooa_archaic_plus_constant_american())
