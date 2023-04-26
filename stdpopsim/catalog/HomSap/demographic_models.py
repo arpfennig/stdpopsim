@@ -2169,10 +2169,11 @@ def _ooa_archaic_plus_constant_american():
         and to the African branch (a deep diverging branch within Africa). Admixture
         is modeled as symmetric migration between the archaic and modern human branches,
         with contribution ending at a given time in the past. 
-        Additionally, recent, constant admixture in the Americas is simulated. The initital admixture pulse is 
+        Additionally, recent, constant admixture in the Americas is simulated. The initial admixture pulse is 
         simulated with 80% contributions from African populations, 19% contributions from European populations, 
-        and 1% contributions from East Asian populations. This is an extended version of the 
-        OutOfAfricaArchaicAdmixture_5R19 model by Ragsdale et al.
+        and 1% contributions from East Asian populations. The constant gene flow is modeled with the same proportions
+        such that each generations 10% of the individuals in the admixed American population are newly arrived migrants.
+        This is an extended version of the OutOfAfricaArchaicAdmixture_5R19 model by Ragsdale et al.
     """
     populations = [
         _yri_population,
