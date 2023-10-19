@@ -1977,12 +1977,17 @@ def _ooa_archaic_plus_american():
         and 1% contributions from East Asian populations. This is an extended version of the 
         OutOfAfricaArchaicAdmixture_5R19 model by Ragsdale et al.
     """
+    # Times are provided in years, so we convert into generations.
+    # In the published model, the authors used a generation time of 29 years to
+    # convert from genetic to physical units
+    generation_time = 29
+
     populations = [
         _yri_population,
         _ceu_population,
         _chb_population,
         stdpopsim.Population(
-            "Neanderthal", "Putative Neanderthals", sampling_time=None
+            "Neanderthal", "Putative Neanderthals", sampling_time=110000 / generation_time # Altai lived ~110kya
         ),
         stdpopsim.Population(
             "ArchaicAFR", "Putative Archaic Africans", sampling_time=None
@@ -2009,10 +2014,7 @@ def _ooa_archaic_plus_american():
     N_CHB0 = 650
     N_AMR0 = 30000 # Initial size of American population from Browning et al.
 
-    # Times are provided in years, so we convert into generations.
-    # In the published model, the authors used a generation time of 29 years to
-    # convert from genetic to physical units
-    generation_time = 29
+
     # calibration of this demographic model used the recombination instead of mutation
     # rate - as such, levels of diversity using the species default rate may not match
     # expectations or observations in human data
@@ -2175,12 +2177,16 @@ def _ooa_archaic_plus_constant_american():
         such that each generations 10% of the individuals in the admixed American population are newly arrived migrants.
         This is an extended version of the OutOfAfricaArchaicAdmixture_5R19 model by Ragsdale et al.
     """
+    # Times are provided in years, so we convert into generations.
+    # In the published model, the authors used a generation time of 29 years to
+    # convert from genetic to physical units
+    generation_time = 29
     populations = [
         _yri_population,
         _ceu_population,
         _chb_population,
         stdpopsim.Population(
-            "Neanderthal", "Putative Neanderthals", sampling_time=None
+            "Neanderthal", "Putative Neanderthals", sampling_time=110000 / generation_time # Altai lived ~110kya
         ),
         stdpopsim.Population(
             "ArchaicAFR", "Putative Archaic Africans", sampling_time=None
@@ -2207,10 +2213,6 @@ def _ooa_archaic_plus_constant_american():
     N_CHB0 = 650
     N_AMR0 = 30000 # Initial size of American population from Browning et al.
 
-    # Times are provided in years, so we convert into generations.
-    # In the published model, the authors used a generation time of 29 years to
-    # convert from genetic to physical units
-    generation_time = 29
     # calibration of this demographic model used the recombination instead of mutation
     # rate - as such, levels of diversity using the species default rate may not match
     # expectations or observations in human data
