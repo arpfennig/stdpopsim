@@ -1987,7 +1987,10 @@ def _ooa_archaic_plus_american():
         _ceu_population,
         _chb_population,
         stdpopsim.Population(
-            "Neanderthal", "Putative Neanderthals", sampling_time=50000 / generation_time # Vindija33.19 lived ~50kya
+            "Neanderthal", "Putative Neanderthals", sampling_time=50000 / generation_time  # Altai lived ~110kya
+        ),
+        stdpopsim.Population(
+            "ArchaicAFR", "Putative Archaic Africans", sampling_time=None
         ),
         stdpopsim.Population(
             "American", "Recently Admixed American population"
