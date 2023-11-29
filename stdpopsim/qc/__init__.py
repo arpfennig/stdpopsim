@@ -7,3 +7,6 @@ from . import HomSap  # NOQA
 from . import PonAbe  # NOQA
 from . import PapAnu  # NOQA
 from . import PanTro  # NOQA
+from . import OrySat  # NOQA
+from . import MusMus  # NOQA
+from . import PhoSin  # NOQA
