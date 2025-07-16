@@ -1673,7 +1673,10 @@ def _papuans_bougainville_10j19():
         ),
         # migration changes
         msprime.MigrationRateChange(
-            time=T_Papuan_Bougainville_split, rate=m_AS_Bougainville, matrix_index=(pop["CHB"], pop["Bougainville"])
+            time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["CHB"], pop["Bougainville"])
+        ),
+        msprime.MigrationRateChange(
+            time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["Papuan"], pop["Bougainville"])
         ),
         msprime.MigrationRateChange(
             time=T_EU_AS_split, rate=0, matrix_index=(pop["CHB"], pop["CEU"])
