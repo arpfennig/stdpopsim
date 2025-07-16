@@ -1,10 +1,9 @@
 """
 Tests for SLiM simulation engine.
 """
+
 import os
 import io
-import sys
-import tempfile
 import math
 from unittest import mock
 import numpy as np
@@ -21,19 +20,17 @@ import stdpopsim
 import stdpopsim.cli
 from .test_cli import capture_output
 
-IS_WINDOWS = sys.platform.startswith("win")
 slim_path = os.environ.get("SLIM", "slim")
 
 
 def count_mut_types(ts):
     selection_coeffs = [
-        stdpopsim.ext.selection_coeff_from_mutation(ts, mut) for mut in ts.mutations()
+        stdpopsim.selection_coeff_from_mutation(ts, mut) for mut in ts.mutations()
     ]
     num_neutral = sum([s == 0 for s in selection_coeffs])
     return [num_neutral, abs(len(selection_coeffs) - num_neutral)]
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestAPI:
     def test_bad_params(self):
         engine = stdpopsim.get_engine("slim")
@@ -136,7 +133,7 @@ class TestAPI:
         )
         assert "community.registerLateEvent" in out
 
-        model = species.get_demographic_model("AmericanAdmixture_4B11")
+        model = species.get_demographic_model("AmericanAdmixture_4B18")
         samples = {"AFR": 10, "EUR": 10, "ASIA": 10}
         out, _ = capture_output(
             engine.simulate,
@@ -147,11 +144,11 @@ class TestAPI:
         )
         assert "community.registerLateEvent" in out
 
-    @pytest.mark.filterwarnings("ignore:Recombination map has length:UserWarning")
+    @pytest.mark.filterwarnings("ignore: Genetic map.*is longer than chromosome length")
     def test_recombination_map(self):
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("HomSap")
-        contig = species.get_contig("chr1", genetic_map="HapMapII_GRCh37")
+        contig = species.get_contig("chr21", genetic_map="HapMapII_GRCh37")
         model = stdpopsim.PiecewiseConstantSize(100)
         samples = {"pop_0": 5}
         engine.simulate(
@@ -165,7 +162,7 @@ class TestAPI:
     def test_simulate(self):
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("AraTha")
-        contig = species.get_contig("5", length_multiplier=0.001)
+        contig = species.get_contig(length=26976)
         model = stdpopsim.PiecewiseConstantSize(species.population_size)
         samples = {"pop_0": 5}
         ts = engine.simulate(
@@ -176,13 +173,13 @@ class TestAPI:
             slim_burn_in=0,
         )
         assert ts.num_samples == 10
-        assert all(tree.num_roots == 1 for tree in ts.trees())
+        assert all(tree.num_roots <= 1 for tree in ts.trees(root_threshold=2))
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     def test_simulate_verbosity(self):
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("AraTha")
-        contig = species.get_contig("5", length_multiplier=0.001)
+        contig = species.get_contig(length=26976)
         model = stdpopsim.PiecewiseConstantSize(species.population_size)
         samples = {"pop_0": 5}
         for v in [0, 1, 2, 3]:
@@ -195,7 +192,7 @@ class TestAPI:
                 verbosity=v,
             )
             assert ts.num_samples == 10
-            assert all(tree.num_roots == 1 for tree in ts.trees())
+            assert all(tree.num_roots <= 1 for tree in ts.trees(root_threshold=2))
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     @pytest.mark.filterwarnings("ignore::stdpopsim.DeprecatedFeatureWarning")
@@ -210,7 +207,7 @@ class TestAPI:
         samples_dict = {"YRI": 5, "CEU": 5, "CHB": 5}
         for samples in [samples_deprecated, samples_dict]:
             for proportion, seed in zip((0, 1), (1234, 2345)):
-                contig = species.get_contig("chr22", length_multiplier=0.001)
+                contig = species.get_contig(length=50818)
                 # need selected mutations so that SLiM produces some
                 contig.add_dfe(
                     intervals=np.array([[0, contig.length / 2]], dtype="int"),
@@ -277,7 +274,7 @@ class TestAPI:
         scriptfile = tmp_path / "slim.script"
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("HomSap")
-        contig = species.get_contig("chr1", length_multiplier=0.01)
+        contig = species.get_contig(length=2489564)
         model = stdpopsim.PiecewiseConstantSize(species.population_size)
         samples = {"pop_0": 5}
         seed = 1024
@@ -290,9 +287,13 @@ class TestAPI:
             slim_scaling_factor=10,
             seed=seed,
         )
+        # this is for Windows paths; there are two levels of escaping
+        # beware: since treefile is a Path object,
+        # treefile.replace('foo') does `cp treefile foo`
+        treefile_escaped = str(treefile).replace("\\", "\\\\\\\\")
         out = re.sub(
-            'defineConstant\\("trees_file.+;',
-            f'defineConstant("trees_file", "{treefile}");',
+            r'defineConstant."trees_file.+;',
+            rf'defineConstant("trees_file", "{treefile_escaped}");',
             out,
         )
         with open(scriptfile, "w") as f:
@@ -319,6 +320,30 @@ class TestAPI:
         assert tables1.nodes == tables2.nodes
         assert tables1.edges == tables2.edges
         assert tables1.mutations == tables2.mutations
+
+    def test_recap_start_time(self):
+        # check that the correct time to start adding mutations from
+        # is actually the value recorded in metadata (whether it is or
+        # differs by 1 or 2 depends on the stages in which the simulation
+        # is set up and written out; see pyslim:#308
+        engine = stdpopsim.get_engine("slim")
+        species = stdpopsim.get_species("AnaPla")
+        contig = species.get_contig(length=1e3)
+        model = stdpopsim.PiecewiseConstantSize(100)
+        samples = {"pop_0": 10}
+        ts = engine.simulate(
+            demographic_model=model,
+            contig=contig,
+            samples=samples,
+            slim_burn_in=3,
+            _recap_and_rescale=False,
+        )
+        root_times = set([ts.node(n).time for t in ts.trees() for n in t.roots])
+        assert root_times == set(
+            [
+                ts.metadata["SLiM"]["cycle"],
+            ]
+        )
 
     def test_assert_min_version(self):
         engine = stdpopsim.get_engine("slim")
@@ -404,7 +429,6 @@ class TestAPI:
             assert all([x.isnumeric() for x in alleles])
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestCLI:
     def docmd(self, _cmd):
         cmd = (f"-q -e slim --slim-burn-in 0 {_cmd} -l 0.001 -c chr1 -s 1234").split()
@@ -419,20 +443,21 @@ class TestCLI:
         out, _ = self.docmd("--slim-script HomSap -d AncientEurasia_9K19 Mbuti:5")
         assert "community.registerLateEvent" in out
         # simultaneous mass migrations, with proportions summing to 1.0
-        out, _ = self.docmd("--slim-script HomSap -d AmericanAdmixture_4B11 AFR:5")
+        out, _ = self.docmd("--slim-script HomSap -d AmericanAdmixture_4B18 AFR:5")
         assert "community.registerLateEvent" in out
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     @pytest.mark.filterwarnings("ignore:.*has only.*individuals alive")
-    def test_simulate(self):
+    @pytest.mark.usefixtures("tmp_path")
+    def test_simulate(self, tmp_path):
         saved_slim_env = os.environ.get("SLIM")
         slim_path = os.environ.get("SLIM", "slim")
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            self.docmd(
-                f"--slim-scaling-factor 20 --slim-path {slim_path} HomSap "
-                f"pop_0:5 -o {f.name}"
-            )
-            ts = tskit.load(f.name)
+        fname = tmp_path / "sim1.trees"
+        self.docmd(
+            f"--slim-scaling-factor 20 --slim-path {slim_path} HomSap "
+            f"pop_0:5 -o {fname}"
+        )
+        ts = tskit.load(fname)
         assert ts.num_samples == 10
         assert all(tree.num_roots == 1 for tree in ts.trees())
 
@@ -441,20 +466,20 @@ class TestCLI:
         else:
             os.environ["SLIM"] = saved_slim_env
 
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            self.docmd(f"--slim-scaling-factor 20 HomSap pop_0:5 -o {f.name}")
-            ts = tskit.load(f.name)
+        fname = tmp_path / "sim2.trees"
+        self.docmd(f"--slim-scaling-factor 20 HomSap pop_0:5 -o {fname}")
+        ts = tskit.load(fname)
         assert ts.num_samples == 10
 
         # verify sample counts for a multipopulation demographic model
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                "-q -e slim --slim-scaling-factor 20 --slim-burn-in 0 "
-                f"HomSap -o {f.name} -l 0.001 -c chr1 -s 1234 "
-                "-d OutOfAfrica_3G09 YRI:0 CEU:0 CHB:4"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
+        fname = tmp_path / "sim3.trees"
+        cmd = (
+            "-q -e slim --slim-scaling-factor 20 --slim-burn-in 0 "
+            f"HomSap -o {fname} -l 0.001 -c chr1 -s 1234 "
+            "-d OutOfAfrica_3G09 YRI:0 CEU:0 CHB:4"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
         assert ts.num_populations == 3
         observed_counts = [0, 0, 0]
         for sample in ts.samples():
@@ -464,59 +489,77 @@ class TestCLI:
 
     def verify_slim_sim(self, ts, num_samples):
         assert ts.num_samples == num_samples
-        assert all(tree.num_roots == 1 for tree in ts.trees())
+        # regions of missing data will have 0 roots
+        assert all(tree.num_roots <= 1 for tree in ts.trees(root_threshold=2))
         n_mut_types = count_mut_types(ts)
         assert n_mut_types[0] > 0
         assert n_mut_types[1] > 0
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_dfe_no_demography(self):
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 -l 0.02 -o {f.name} --dfe Gamma_K17 -s 24 "
-                f"pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dfe_no_demography(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"HomSap -c chr22 -l 0.02 -o {fname} --dfe Gamma_K17 -s 24 "
+            f"pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_dfe_interval(self):
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 -l 0.01 -o {f.name} --dfe Gamma_K17 -s 984 "
-                f"--dfe-interval 1000,100000 pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dfe_no_interval(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"HomSap -c chr22 -l 0.01 -o {fname} --dfe Gamma_K17 -s 984 "
+            f"pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
+        self.verify_slim_sim(ts, num_samples=10)
+
+    @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dfe_interval(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"HomSap -c chr22 -l 0.01 -o {fname} --dfe Gamma_K17 -s 984 "
+            f"--dfe-interval 1000,100000 pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     @pytest.mark.filterwarnings("ignore:.*has only.*individuals alive")
-    def test_dfe_demography(self):
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 -l 0.01 -o {f.name} "
-                "-d OutOfAfrica_3G09 --dfe Gamma_K17 -s 148 "
-                "--dfe-interval 1000,100000 YRI:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dfe_demography(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"HomSap -c chr22 -l 0.01 -o {fname} "
+            "-d OutOfAfrica_3G09 --dfe Gamma_K17 -s 148 "
+            "--dfe-interval 1000,100000 YRI:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_dfe_annotation(self):
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 -o {f.name} --dfe Gamma_K17 -s 913 "
-                "--dfe-annotation ensembl_havana_104_CDS pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dfe_annotation(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"HomSap -c chr22 -o {fname} --dfe Gamma_K17 -s 913 "
+            "--dfe-annotation ensembl_havana_104_CDS pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
         self.verify_slim_sim(ts, num_samples=10)
 
     # tmp_path is a pytest fixture
@@ -541,42 +584,54 @@ class TestCLI:
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_chromosomal_segment(self):
+    @pytest.mark.usefixtures("tmp_path")
+    def test_chromosomal_segment(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
         left = 101024
         right = 200111
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 --left {left} --right {right} -o {f.name} "
-                f"--dfe Gamma_K17 -s 24 pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
-        assert ts.sequence_length == right - left
+        sp = "HomSap"
+        chrom = "chr22"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"{sp} -c {chrom} --left {left} --right {right} -o {fname} "
+            f"--dfe Gamma_K17 -s 24 pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
+        species = stdpopsim.get_species(sp)
+        contig = species.get_contig(chrom)
+        assert ts.sequence_length == contig.length
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_chromosomal_segment_with_dfe_interval(self):
+    @pytest.mark.usefixtures("tmp_path")
+    def test_chromosomal_segment_with_dfe_interval(self, tmp_path):
+        fname = tmp_path / "sim1.trees"
         left = 101024
         right = 200111
         dfe_left = left - 5000
         dfe_right = left + 90000
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 --left {left} --right {right} -o {f.name} "
-                f"--dfe Gamma_K17 -s 984 --dfe-interval {dfe_left},{dfe_right} "
-                f"pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
-        assert ts.sequence_length == right - left
+        sp = "HomSap"
+        chrom = "chr21"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"{sp} -c {chrom} --left {left} --right {right} -o {fname} "
+            f"--dfe Gamma_K17 -s 984 --dfe-interval {dfe_left},{dfe_right} "
+            f"pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
+        species = stdpopsim.get_species(sp)
+        contig = species.get_contig(chrom)
+        assert ts.sequence_length == contig.length
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     def test_chromosomal_segment_with_dfe_bed_file(self, tmp_path):
         left = 101024
         right = 300111
+        sp = "HomSap"
+        chrom = "chr19"
         lines = [
             "\t".join(["chr22", "100000", "145000"]),
             "\t".join(["chr22", "150000", "302425"]),
@@ -588,33 +643,40 @@ class TestCLI:
         fname = tmp_path / "sim.trees"
         cmd = (
             f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-            f"HomSap -c chr22 -s 1234 --left {left} --right {right} -o {fname} "
+            f"{sp} -c {chrom} -s 1234 --left {left} --right {right} -o {fname} "
             f"--dfe Gamma_K17 -s 183 --dfe-bed-file {tmp_path / 'ex.bed'} "
             f"pop_0:5"
         ).split()
         capture_output(stdpopsim.cli.stdpopsim_main, cmd)
         ts = tskit.load(fname)
-        assert ts.sequence_length == right - left
+        species = stdpopsim.get_species(sp)
+        contig = species.get_contig(chrom)
+        assert ts.sequence_length == contig.length
         self.verify_slim_sim(ts, num_samples=10)
 
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
-    def test_chromosomal_segment_with_dfe_annotation(self):
+    @pytest.mark.usefixtures("tmp_path")
+    def test_chromosomal_segment_with_dfe_annotation(self, tmp_path):
         left = 37500000
-        right = 38000000
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            cmd = (
-                f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
-                f"HomSap -c chr22 --left {left} --right {right} -o {f.name} "
-                f"--dfe Gamma_K17 -s 913 --dfe-annotation ensembl_havana_104_CDS "
-                f"pop_0:5"
-            ).split()
-            capture_output(stdpopsim.cli.stdpopsim_main, cmd)
-            ts = tskit.load(f.name)
-        assert ts.sequence_length == right - left
+        right = 48000000
+        sp = "HomSap"
+        chrom = "chr18"
+        fname = tmp_path / "sim1.trees"
+        cmd = (
+            f"-q -e slim --slim-scaling-factor 20 --slim-path {slim_path} "
+            f"{sp} -c {chrom} --left {left} --right {right} -o {fname} "
+            f"--dfe Gamma_K17 -s 913 --dfe-annotation ensembl_havana_104_CDS "
+            f"pop_0:5"
+        ).split()
+        capture_output(stdpopsim.cli.stdpopsim_main, cmd)
+        ts = tskit.load(fname)
+        species = stdpopsim.get_species(sp)
+        contig = species.get_contig(chrom)
+        assert ts.sequence_length == contig.length
         self.verify_slim_sim(ts, num_samples=10)
 
-    # tmp_path is a pytest fixture
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
+    @pytest.mark.usefixtures("tmp_path")
     def test_errors(self, tmp_path):
         lines = [
             "\t".join(["chr22", "100000", "145000"]),
@@ -692,7 +754,9 @@ class TestCLI:
             capture_output(stdpopsim.cli.stdpopsim_main, cmd)
 
     @mock.patch("stdpopsim.slim_engine._SLiMEngine.get_version", return_value="64.64")
-    def test_dry_run(self, _mocked_get_version):
+    @pytest.mark.usefixtures("tmp_path")
+    def test_dry_run(self, _mocked_get_version, tmp_path):
+        fname = tmp_path / "sim1.trees"
         # --dry-run should run slim, but not create an output file.
         with mock.patch("subprocess.Popen", autospec=True) as mocked_popen:
             # Popen is used as a context manager, so we frob the return value
@@ -701,14 +765,13 @@ class TestCLI:
             proc.returncode = 0
             proc.stdout = io.StringIO()
             proc.stderr = io.StringIO()
-            with tempfile.NamedTemporaryFile(mode="w") as f:
-                self.docmd(f"HomSap pop_0:5 --dry-run -o {f.name}")
+            self.docmd(f"HomSap pop_0:5 --dry-run -o {fname}")
         mocked_popen.assert_called_once()
         slim_path = os.environ.get("SLIM", "slim")
         assert slim_path in mocked_popen.call_args[0][0]
-        with tempfile.NamedTemporaryFile(mode="w") as f:
-            self.docmd(f"HomSap pop_0:5 --dry-run -o {f.name}")
-            assert os.stat(f.name).st_size == 0
+        fname = tmp_path / "sim2.trees"
+        self.docmd(f"HomSap pop_0:5 --dry-run -o {fname}")
+        assert not os.path.isfile(fname)
 
     def test_bad_slim_environ_var(self):
         saved_slim_env = os.environ.get("SLIM")
@@ -734,7 +797,6 @@ class TestCLI:
             os.environ["SLIM"] = saved_slim_env
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestWarningsAndErrors:
     """
     Checks that warning messages are printed when appropriate.
@@ -743,13 +805,13 @@ class TestWarningsAndErrors:
     def triplet_diploid(self):
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("HomSap")
-        contig = species.get_contig("chr22", length_multiplier=0.001)
+        contig = species.get_contig(length=50818)
         return engine, species, contig
 
     def triplet_haploid(self):
         engine = stdpopsim.get_engine("slim")
         species = stdpopsim.get_species("EscCol")
-        contig = species.get_contig("Chromosome", length_multiplier=0.001)
+        contig = species.get_contig(length=4642)
         return engine, species, contig
 
     @pytest.mark.filterwarnings("error::stdpopsim.SLiMOddSampleWarning")
@@ -812,12 +874,12 @@ class TestWarningsAndErrors:
         model = stdpopsim.PiecewiseConstantSize(100)
         samples = {"pop_0": 1}
 
-        with pytest.raises(stdpopsim.SLiMException):
+        with pytest.raises(stdpopsim.SLiMException, match="is zero at tick 1"):
             engine.simulate(
                 demographic_model=model,
                 contig=contig,
                 samples=samples,
-                slim_scaling_factor=200,
+                slim_scaling_factor=300,
                 dry_run=True,
             )
 
@@ -852,7 +914,7 @@ class TestWarningsAndErrors:
                 demographic_model=model,
                 contig=contig,
                 samples=samples,
-                slim_scaling_factor=200,
+                slim_scaling_factor=300,
                 dry_run=True,
             )
 
@@ -1021,7 +1083,7 @@ class TestWarningsAndErrors:
 
 class TestSlimAvailable:
     """
-    Checks whether SLiM is available or not on platforms that support it.
+    Checks whether SLiM is available or not.
     """
 
     def test_parser_has_options(self):
@@ -1029,20 +1091,15 @@ class TestSlimAvailable:
         with mock.patch("sys.exit", autospec=True):
             _, stderr = capture_output(parser.parse_args, ["--help"])
             # On windows we should have no "slim" options
-            assert IS_WINDOWS == ("slim" not in stderr)
-
-    def test_engine_available(self):
-        all_engines = [engine.id for engine in stdpopsim.all_engines()]
-        assert IS_WINDOWS == ("slim" not in all_engines)
+            assert "slim" in stderr
 
 
 def get_test_contig(
-    spp="HomSap", chrom="chr22", length_multiplier=0.001, left=None, right=None
+    spp="HomSap",
+    length=50818,
 ):
     species = stdpopsim.get_species(spp)
-    contig = species.get_contig(
-        chrom, length_multiplier=length_multiplier, left=left, right=right
-    )
+    contig = species.get_contig(length=length)
     return contig
 
 
@@ -1081,7 +1138,6 @@ class PiecewiseConstantSizeMixin(object):
         return af
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestRecombinationMap(PiecewiseConstantSizeMixin):
     def verify_recombination_map(self, contig, ts):
         Q = ts.metadata["SLiM"]["user_metadata"]["Q"]
@@ -1120,6 +1176,7 @@ class TestRecombinationMap(PiecewiseConstantSizeMixin):
             samples=samples,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=888,
         )
         self.verify_recombination_map(contig, ts)
 
@@ -1142,12 +1199,47 @@ class TestRecombinationMap(PiecewiseConstantSizeMixin):
             samples=samples,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=456,
         )
         self.verify_recombination_map(contig, ts)
         assert list(ts.breakpoints()) == [0.0, midpoint, contig.length]
 
+    def test_not_simulated_outside_region(self):
+        # test that when left, right are specified
+        # we legit don't simulate anything outside that region
+        species = stdpopsim.get_species("AraTha")
+        model = stdpopsim.PiecewiseConstantSize(100)
+        samples = {"pop_0": 50}
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
+        left, right = 100000, 900000
+        contig = species.get_contig("1", left=left, right=right)
+        dfe = species.get_dfe("GammaAdditive_H18")
+        exons = species.get_annotations("araport_11_exons")
+        exon_intervals = exons.get_chromosome_annotations("1")
+        contig.add_dfe(intervals=exon_intervals, DFE=dfe)
+
+        engine = stdpopsim.get_engine("slim")
+        ts = engine.simulate(
+            model,
+            contig,
+            samples,
+            seed=236,
+            slim_burn_in=100,
+        )
+
+        assert ts.sequence_length > right
+        assert ts.num_sites > 0
+        assert left in ts.breakpoints()
+        assert right in ts.breakpoints()
+        assert left <= min(ts.sites_position)
+        assert max(ts.sites_position) < right
+        assert ts.num_trees > 2
+        for t in ts.trees(root_threshold=2):
+            tl, tr = t.interval
+            if tl > right or tr < left:
+                assert t.num_roots == 0
+
+
 class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
 
     mut_params = {
@@ -1224,6 +1316,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
         breaks = np.linspace(0, contig.length, n + 1)
         for j, dfe in enumerate(dfes):
             interval = [breaks[j], breaks[j + 1]]
+            print(j, interval)
             contig.add_dfe(intervals=np.array([interval], dtype="int"), DFE=dfe)
         engine = stdpopsim.get_engine("slim")
         ts = engine.simulate(
@@ -1461,6 +1554,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=135,
         )
         self.verify_genomic_elements(contig, ts)
         self.verify_mutation_rates(contig, ts)
@@ -1480,6 +1574,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=246,
         )
         self.verify_genomic_elements(contig, ts)
         self.verify_mutation_rates(contig, ts)
@@ -1497,6 +1592,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=357,
         )
         self.verify_genomic_elements(contig, ts)
         self.verify_mutation_rates(contig, ts)
@@ -1531,6 +1627,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=468,
         )
         self.verify_genomic_elements(contig, ts)
         self.verify_mutation_rates(contig, ts)
@@ -1559,6 +1656,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             slim_scaling_factor=10,
             slim_burn_in=0.1,
             verbosity=3,  # to get metadata output
+            seed=579,
             _recap_and_rescale=False,
         )
         assert ts.num_sites > 0
@@ -1575,6 +1673,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             slim_scaling_factor=10,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=147,
             _recap_and_rescale=False,
         )
         assert ts.num_sites == 0
@@ -1593,6 +1692,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             slim_scaling_factor=10,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=258,
             _recap_and_rescale=False,
         )
         assert ts.num_sites == 0
@@ -1611,6 +1711,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             slim_scaling_factor=Q,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=369,
             _recap_and_rescale=False,
         )
         ge_types = self.slim_metadata_key0(
@@ -1643,6 +1744,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             slim_scaling_factor=Q,
             slim_burn_in=0.1,
             verbosity=3,
+            seed=470,
             _recap_and_rescale=False,
         )
         ge_types = self.slim_metadata_key0(
@@ -1675,7 +1777,8 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
     def test_chromosomal_segment(self):
         left = 100101
         right = 201024
-        contig = get_test_contig(length_multiplier=1, left=left, right=right)
+        species = stdpopsim.get_species("HomSap")
+        contig = species.get_contig("chr22", left=left, right=right)
         L = contig.length
         example_dfes = self.get_example_dfes()
         for j, dfe in enumerate(example_dfes):
@@ -1691,10 +1794,50 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=159,
         )
         self.verify_genomic_elements(contig, ts)
         self.verify_mutation_rates(contig, ts)
-        assert int(ts.sequence_length) == right - left
+        assert int(ts.sequence_length) == contig.length
+
+    def test_dfe_clipping_to_segment(self):
+        left = 100101
+        right = 201024
+        homsap = stdpopsim.get_species("HomSap")
+
+        # check that default DFE is clipped to [left, right]
+        contig = homsap.get_contig("chr22", left=left, right=right)
+        dfe_breaks, dfe_type = contig.dfe_breakpoints()
+        assert dfe_breaks.size == 4 and dfe_type.size == 3
+        assert dfe_breaks[1] == left and dfe_breaks[2] == right
+        assert dfe_type[0] == dfe_type[2] == -1 and dfe_type[1] == 0
+
+        # check that added DFE is clipped to [left, right]
+        dfe = homsap.get_dfe("Gamma_K17")
+        contig.add_dfe(np.array([[0, contig.length]], dtype="int"), dfe)
+        dfe_breaks, dfe_type = contig.dfe_breakpoints()
+        assert dfe_breaks.size == 4 and dfe_type.size == 3
+        assert dfe_breaks[1] == left and dfe_breaks[2] == right
+        assert dfe_type[0] == dfe_type[2] == -1 and dfe_type[1] == 1
+
+        # check that (not recapitated) simulation has no recombinations or mutations
+        # in the "missing" flanks
+        engine = stdpopsim.get_engine("slim")
+        demogr = stdpopsim.PiecewiseConstantSize(1e3)
+        ts = engine.simulate(
+            demographic_model=demogr,
+            contig=contig,
+            samples={"pop_0": 10},
+            seed=1234,
+            _recap_and_rescale=False,
+        )
+        assert ts.first().interval.right >= left
+        assert ts.last().interval.left <= right
+        mutations_in_region = np.logical_and(
+            ts.sites_position[ts.mutations_site] >= left,
+            ts.sites_position[ts.mutations_site] <= right,
+        )
+        assert np.all(mutations_in_region)
 
     def test_dominance_coeff_list(self):
         # test that discretized h-s relationships work
@@ -1732,6 +1875,7 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             verbosity=3,  # to get metadata output
+            seed=260,
         )
         assert len(ts.metadata["stdpopsim"]["DFEs"]) == len(contig.dfe_list) + 1
         # slim mutation type IDs with dominance coeff lists:
@@ -1756,7 +1900,6 @@ class TestGenomicElementTypes(PiecewiseConstantSizeMixin):
         self.verify_mutation_rates(contig, ts)
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestLogfile(PiecewiseConstantSizeMixin):
     # tmp_path is a pytest fixture
     def test_logfile(self, tmp_path):
@@ -1780,13 +1923,12 @@ class TestLogfile(PiecewiseConstantSizeMixin):
         assert np.all(data[:, 2] == 0.0)
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestDrawMutation(PiecewiseConstantSizeMixin):
     def test_draw_mutation(self):
         contig = get_test_contig()
         contig.add_single_site(id=self.mut_id, coordinate=100)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id=self.mut_id,
                 population="pop_0",
@@ -1806,12 +1948,12 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
         contig.add_single_site(id="recent", coordinate=100)
         contig.add_single_site(id="older", coordinate=101)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut // 2,
                 single_site_id="recent",
                 population="pop_0",
             ),
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="older",
                 population="pop_0",
@@ -1830,12 +1972,12 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
         contig = get_test_contig()
         contig.add_single_site(id="mutant", coordinate=100)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut // 2,
                 single_site_id="mutant",
                 population="pop_0",
             ),
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="mutant",
                 population="pop_0",
@@ -1855,7 +1997,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
         engine = stdpopsim.get_engine("slim")
         for single_site_id in ["deleterious", "sweep"]:
             extended_events = [
-                stdpopsim.ext.DrawMutation(
+                stdpopsim.DrawMutation(
                     time=self.T_mut,
                     single_site_id=single_site_id,
                     population="pop_0",
@@ -1872,7 +2014,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_no_mutation_types_defined(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id=self.mut_id,
                 population="pop_0",
@@ -1893,7 +2035,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_multiple_mutation_types_defined(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -1929,7 +2071,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_fitness_distribution_not_fixed(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -1956,7 +2098,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_multiple_intervals(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -1992,7 +2134,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_interval_too_large(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -2028,7 +2170,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_duplicate_mutation_ids(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -2049,7 +2191,7 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
 
     def test_mutation_has_no_interval(self):
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
@@ -2071,21 +2213,20 @@ class TestDrawMutation(PiecewiseConstantSizeMixin):
     def test_bad_time(self):
         for time in (-1,):
             with pytest.raises(ValueError):
-                stdpopsim.ext.DrawMutation(
+                stdpopsim.DrawMutation(
                     time=time,
                     single_site_id="irrelevant",
                     population="pop_0",
                 )
         for time in (0, -1):
             with pytest.raises(ValueError):
-                stdpopsim.ext.DrawMutation(
-                    time=stdpopsim.ext.GenerationAfter(time),
+                stdpopsim.DrawMutation(
+                    time=stdpopsim.GenerationAfter(time),
                     single_site_id="irrelevant",
                     population="pop_0",
                 )
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
     @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
     def test_drawn_mutation_not_lost(self):
@@ -2094,12 +2235,12 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
         ct.mutation_rate = 0.0
         ct.add_single_site(id="test", coordinate=100)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
             ),
-            stdpopsim.ext.ConditionOnAlleleFrequency(
+            stdpopsim.ConditionOnAlleleFrequency(
                 start_time=0,
                 end_time=0,
                 single_site_id="test",
@@ -2115,6 +2256,7 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
             extended_events=extended_events,
             slim_scaling_factor=10,
             slim_burn_in=0.1,
+            seed=321,
             _recap_and_rescale=False,
         )
         assert ts.num_mutations == 1
@@ -2126,12 +2268,12 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
         ct.mutation_rate = 0.0
         ct.add_single_site(id="test", coordinate=100)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="test",
                 population="pop_0",
             ),
-            stdpopsim.ext.ConditionOnAlleleFrequency(
+            stdpopsim.ConditionOnAlleleFrequency(
                 start_time=0,
                 end_time=0,
                 single_site_id="test",
@@ -2147,6 +2289,7 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
             extended_events=extended_events,
             slim_scaling_factor=10,
             slim_burn_in=0.1,
+            seed=432,
             _recap_and_rescale=False,
         )
         assert ts.num_mutations == 0
@@ -2159,13 +2302,13 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
         ct.add_single_site(id="test", coordinate=100)
         for af_threshold, seed in zip((0.01, 0.1, 0.2), (1, 2, 3)):
             extended_events = [
-                stdpopsim.ext.DrawMutation(
+                stdpopsim.DrawMutation(
                     time=self.T_mut,
                     single_site_id="test",
                     population="pop_0",
                 ),
                 # Condition on desired AF at end of simulation.
-                stdpopsim.ext.ConditionOnAlleleFrequency(
+                stdpopsim.ConditionOnAlleleFrequency(
                     start_time=0,
                     end_time=0,
                     single_site_id="test",
@@ -2206,7 +2349,7 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
             ("<=", 1),
         ]:
             with pytest.raises(ValueError):
-                stdpopsim.ext.ConditionOnAlleleFrequency(
+                stdpopsim.ConditionOnAlleleFrequency(
                     start_time=0,
                     end_time=0,
                     single_site_id="irrelevant",
@@ -2218,7 +2361,7 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
     def test_bad_times(self):
         for start_time, end_time in [(-1, 0), (0, -1), (1, 100)]:
             with pytest.raises(ValueError):
-                stdpopsim.ext.ConditionOnAlleleFrequency(
+                stdpopsim.ConditionOnAlleleFrequency(
                     start_time=start_time,
                     end_time=end_time,
                     single_site_id="irrelevant",
@@ -2242,13 +2385,13 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
         ]:
             with pytest.raises(ValueError):
                 extended_events = [
-                    stdpopsim.ext.DrawMutation(
+                    stdpopsim.DrawMutation(
                         time=self.T_mut,
                         single_site_id=self.mut_id,
                         population="pop_0",
                     ),
-                    stdpopsim.ext.ConditionOnAlleleFrequency(
-                        start_time=stdpopsim.ext.GenerationAfter(start_time),
+                    stdpopsim.ConditionOnAlleleFrequency(
+                        start_time=stdpopsim.GenerationAfter(start_time),
                         end_time=end_time,
                         single_site_id=self.mut_id,
                         population="pop_0",
@@ -2265,18 +2408,18 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
                 )
 
     def test_op_id(self):
-        op_types = stdpopsim.ext.ConditionOnAlleleFrequency.op_types
+        op_types = stdpopsim.ConditionOnAlleleFrequency.op_types
         for op in op_types:
-            id = stdpopsim.ext.ConditionOnAlleleFrequency.op_id(op)
+            id = stdpopsim.ConditionOnAlleleFrequency.op_id(op)
             assert 0 <= id < len(op_types)
         for op in ("==", "=", "!=", {}, ""):
             with pytest.raises(ValueError):
-                id = stdpopsim.ext.ConditionOnAlleleFrequency.op_id(op)
+                id = stdpopsim.ConditionOnAlleleFrequency.op_id(op)
 
     def test_no_drawn_mutation(self):
         extended_events = [
-            stdpopsim.ext.ConditionOnAlleleFrequency(
-                start_time=stdpopsim.ext.GenerationAfter(self.T_mut),
+            stdpopsim.ConditionOnAlleleFrequency(
+                start_time=stdpopsim.GenerationAfter(self.T_mut),
                 end_time=0,
                 single_site_id=self.mut_id,
                 population="pop_0",
@@ -2295,9 +2438,8 @@ class TestAlleleFrequencyConditioning(PiecewiseConstantSizeMixin):
             )
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
-    # Testing stdpopsim.ext.ChangeMutationFitness is challenging, because
+    # Testing stdpopsim.ChangeMutationFitness is challenging, because
     # the side-effects are not deterministic. But if we condition on fixation
     # of a drawn mutation, such a simulation will be very slow without strong
     # positive selection (because we effectively do rejection sampling on the
@@ -2309,13 +2451,13 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
         engine = stdpopsim.get_engine("slim")
         for af_threshold, seed in zip((0.5, 1), (1, 2)):
             extended_events = [
-                stdpopsim.ext.DrawMutation(
+                stdpopsim.DrawMutation(
                     time=self.T_mut,
                     single_site_id=self.mut_id,
                     population="pop_0",
                 ),
-                stdpopsim.ext.ChangeMutationFitness(
-                    start_time=stdpopsim.ext.GenerationAfter(self.T_mut),
+                stdpopsim.ChangeMutationFitness(
+                    start_time=stdpopsim.GenerationAfter(self.T_mut),
                     end_time=0,
                     single_site_id=self.mut_id,
                     population="pop_0",
@@ -2324,8 +2466,8 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
                 ),
                 # Condition on AF > 0, to restore() immediately if the
                 # allele is lost.
-                stdpopsim.ext.ConditionOnAlleleFrequency(
-                    start_time=stdpopsim.ext.GenerationAfter(self.T_mut),
+                stdpopsim.ConditionOnAlleleFrequency(
+                    start_time=stdpopsim.GenerationAfter(self.T_mut),
                     end_time=0,
                     single_site_id=self.mut_id,
                     population="pop_0",
@@ -2333,7 +2475,7 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
                     allele_frequency=0,
                 ),
                 # Condition on desired AF at end of simulation.
-                stdpopsim.ext.ConditionOnAlleleFrequency(
+                stdpopsim.ConditionOnAlleleFrequency(
                     start_time=0,
                     end_time=0,
                     single_site_id=self.mut_id,
@@ -2362,7 +2504,7 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
         contig.add_single_site("one", coordinate=100)
         contig.add_single_site("two", coordinate=101)
         extended_events = [
-            stdpopsim.ext.DrawMutation(
+            stdpopsim.DrawMutation(
                 time=self.T_mut,
                 single_site_id="one",
                 population="pop_0",
@@ -2373,6 +2515,7 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
             contig=contig,
             samples=self.samples,
             extended_events=extended_events,
+            seed=543,
         )
         referenced_dfe = ts.metadata["stdpopsim"]["DFEs"][1]
         assert referenced_dfe["id"] == "one"
@@ -2383,8 +2526,8 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
 
     def test_no_drawn_mutation(self):
         extended_events = [
-            stdpopsim.ext.ChangeMutationFitness(
-                start_time=stdpopsim.ext.GenerationAfter(self.T_mut),
+            stdpopsim.ChangeMutationFitness(
+                start_time=stdpopsim.GenerationAfter(self.T_mut),
                 end_time=0,
                 single_site_id=self.mut_id,
                 selection_coeff=0.1,
@@ -2404,7 +2547,7 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
     def test_bad_times(self):
         for start_time, end_time in [(-1, 0), (0, -1), (1, 100)]:
             with pytest.raises(ValueError):
-                stdpopsim.ext.ChangeMutationFitness(
+                stdpopsim.ChangeMutationFitness(
                     start_time=start_time,
                     end_time=end_time,
                     single_site_id="irrelevant",
@@ -2417,8 +2560,8 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
         engine = stdpopsim.get_engine("slim")
         for pop in ["not present", 0]:
             extended_events = [
-                stdpopsim.ext.ChangeMutationFitness(
-                    start_time=stdpopsim.ext.GenerationAfter(self.T_mut),
+                stdpopsim.ChangeMutationFitness(
+                    start_time=stdpopsim.GenerationAfter(self.T_mut),
                     end_time=0,
                     single_site_id=self.mut_id,
                     population=pop,
@@ -2450,13 +2593,13 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
         ]:
             with pytest.raises(ValueError):
                 extended_events = [
-                    stdpopsim.ext.DrawMutation(
+                    stdpopsim.DrawMutation(
                         time=self.T_mut,
                         single_site_id=self.mut_id,
                         population="pop_0",
                     ),
-                    stdpopsim.ext.ChangeMutationFitness(
-                        start_time=stdpopsim.ext.GenerationAfter(start_time),
+                    stdpopsim.ChangeMutationFitness(
+                        start_time=stdpopsim.GenerationAfter(start_time),
                         end_time=end_time,
                         single_site_id=self.mut_id,
                         population="pop_0",
@@ -2473,7 +2616,6 @@ class TestChangeMutationFitness(PiecewiseConstantSizeMixin):
                 )
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestExtendedEvents(PiecewiseConstantSizeMixin):
     def test_bad_extended_events(self):
         engine = stdpopsim.get_engine("slim")
@@ -2493,7 +2635,6 @@ class TestExtendedEvents(PiecewiseConstantSizeMixin):
                 )
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestSelectiveSweep(PiecewiseConstantSizeMixin):
     @staticmethod
     def _get_island_model(Ne=1000, migration_rate=0.01):
@@ -2573,7 +2714,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                     id=locus_id,
                     coordinate=100,
                 )
-                extended_events = stdpopsim.ext.selective_sweep(
+                extended_events = stdpopsim.selective_sweep(
                     single_site_id=locus_id,
                     population="pop_0",
                     mutation_generation_ago=mutation_generation_ago,
@@ -2589,6 +2730,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                     slim_burn_in=1,
                     logfile=logfile,
                     logfile_interval=1,
+                    seed=654,
                 )
                 in_sweep, outside_sweep, _ = self._fitness_per_generation(
                     logfile=logfile,
@@ -2614,7 +2756,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             id=locus_id,
             coordinate=100,
         )
-        extended_events = stdpopsim.ext.selective_sweep(
+        extended_events = stdpopsim.selective_sweep(
             single_site_id=locus_id,
             population="pop_0",
             mutation_generation_ago=mutation_generation_ago,
@@ -2632,6 +2774,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                 slim_burn_in=1,
                 logfile=logfile,
                 logfile_interval=1,
+                seed=654,
             )
             in_sweep, outside_sweep, rejections = self._fitness_per_generation(
                 logfile=logfile,
@@ -2661,7 +2804,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             id=locus_id,
             coordinate=100,
         )
-        extended_events = stdpopsim.ext.selective_sweep(
+        extended_events = stdpopsim.selective_sweep(
             single_site_id=locus_id,
             population="pop_0",
             mutation_generation_ago=mutation_generation_ago,
@@ -2679,6 +2822,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                 slim_burn_in=1,
                 logfile=logfile,
                 logfile_interval=1,
+                seed=765,
             )
             in_sweep, outside_sweep, rejections = self._fitness_per_generation(
                 logfile=logfile,
@@ -2695,7 +2839,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
 
     def test_sweep_with_negative_selection_coeff(self):
         with pytest.raises(ValueError, match="coefficient must be"):
-            stdpopsim.ext.selective_sweep(
+            stdpopsim.selective_sweep(
                 single_site_id="irrelevant",
                 population="irrelevant",
                 mutation_generation_ago=1000,
@@ -2705,7 +2849,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
     def test_sweep_with_bad_AF_conditions(self):
         for start_freq, end_freq in zip([-0.1, 0.1], [0.1, -0.1]):
             with pytest.raises(ValueError, match="of the sweep must be in"):
-                stdpopsim.ext.selective_sweep(
+                stdpopsim.selective_sweep(
                     single_site_id="irrelevant",
                     population="irrelevant",
                     mutation_generation_ago=1000,
@@ -2717,7 +2861,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
         with pytest.raises(
             ValueError, match="coincides with the introduction of the mutation"
         ):
-            stdpopsim.ext.selective_sweep(
+            stdpopsim.selective_sweep(
                 single_site_id="irrelevant",
                 population="irrelevant",
                 mutation_generation_ago=1000,
@@ -2740,7 +2884,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             id=locus_id,
             coordinate=100,
         )
-        extended_events = stdpopsim.ext.selective_sweep(
+        extended_events = stdpopsim.selective_sweep(
             single_site_id=locus_id,
             population="pop_1",
             mutation_generation_ago=mutation_generation_ago,
@@ -2760,6 +2904,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                 slim_burn_in=1,
                 logfile=logfile,
                 logfile_interval=1,
+                seed=876,
             )
             p0_in_sweep, p0_outside_sweep, _ = self._fitness_per_generation(
                 logfile=logfile,
@@ -2795,7 +2940,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             id=locus_id,
             coordinate=100,
         )
-        extended_events = stdpopsim.ext.selective_sweep(
+        extended_events = stdpopsim.selective_sweep(
             single_site_id=locus_id,
             population="pop_1",
             mutation_generation_ago=mutation_generation_ago,
@@ -2812,6 +2957,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             slim_burn_in=1,
             logfile=logfile,
             logfile_interval=1,
+            seed=987,
         )
         p0_in_sweep, p0_outside_sweep, _ = self._fitness_per_generation(
             logfile=logfile,
@@ -2850,7 +2996,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
                 id=locus_id,
                 coordinate=coord,
             )
-            extended_events += stdpopsim.ext.selective_sweep(
+            extended_events += stdpopsim.selective_sweep(
                 single_site_id=locus_id,
                 population=pop,
                 mutation_generation_ago=mutation_generation_ago,
@@ -2867,6 +3013,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             slim_burn_in=1,
             logfile=logfile,
             logfile_interval=1,
+            seed=531,
         )
         for i, _ in enumerate(pop_ids):
             in_sweep, outside_sweep, _ = self._fitness_per_generation(
@@ -2904,7 +3051,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             id=locus_id,
             coordinate=100,
         )
-        extended_events = stdpopsim.ext.selective_sweep(
+        extended_events = stdpopsim.selective_sweep(
             single_site_id=locus_id,
             population="pop_1",
             mutation_generation_ago=mutation_generation_ago,
@@ -2919,6 +3066,7 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
             slim_burn_in=1,
             logfile=logfile,
             logfile_interval=1,
+            seed=642,
         )
         p0_in_sweep, p0_outside_sweep, _ = self._fitness_per_generation(
             logfile=logfile,
@@ -2939,7 +3087,6 @@ class TestSelectiveSweep(PiecewiseConstantSizeMixin):
         assert np.all(p1_outside_sweep <= 1)
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
 class TestSelectionCoeffFromMutation:
 
     species = stdpopsim.get_species("HomSap")
@@ -2966,12 +3113,13 @@ class TestSelectionCoeffFromMutation:
                 contig=contig,
                 samples=self.samples,
                 slim_burn_in=10,
+                seed=753,
             )
             is_stacked = [len(m.metadata["mutation_list"]) > 1 for m in ts.mutations()]
             if any(is_stacked):
                 break
         selection_coeffs = [
-            stdpopsim.ext.selection_coeff_from_mutation(ts, m) for m in ts.mutations()
+            stdpopsim.selection_coeff_from_mutation(ts, m) for m in ts.mutations()
         ]
         assert np.all(
             np.logical_or(
@@ -2988,11 +3136,12 @@ class TestSelectionCoeffFromMutation:
                 demographic_model=self.model,
                 contig=contig,
                 samples=self.samples,
+                seed=864,
             )
             if ts.num_mutations > 0:
                 break
         selection_coeffs = [
-            stdpopsim.ext.selection_coeff_from_mutation(ts, m) for m in ts.mutations()
+            stdpopsim.selection_coeff_from_mutation(ts, m) for m in ts.mutations()
         ]
         assert np.allclose(selection_coeffs, 0.0)
 
@@ -3004,16 +3153,112 @@ class TestSelectionCoeffFromMutation:
                 demographic_model=self.model,
                 contig=contig,
                 samples=self.samples,
+                seed=975,
             )
             if ts.num_mutations > 0:
                 break
         with pytest.raises(ValueError, match="must be a"):
-            stdpopsim.ext.selection_coeff_from_mutation("foo", next(ts.mutations()))
+            stdpopsim.selection_coeff_from_mutation("foo", next(ts.mutations()))
         with pytest.raises(ValueError, match="must be a"):
-            stdpopsim.ext.selection_coeff_from_mutation(ts, "bar")
+            stdpopsim.selection_coeff_from_mutation(ts, "bar")
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="SLiM not available on windows")
+class TestPopSizes:
+    """
+    Test that population sizes are set correctly.
+    Thanks to discretization artifacts, this is a bit tricky in phases
+    of exponential growth: suppose we are growing at rate r for the
+    time period [t, t+T), starting from size x. In discrete time, at
+    time t we set the size to x; then subsequently we re-set the size
+    only T-1 times. (One consideration is that we re-set sizes in `late`,
+    which doesn't take effect until the next tick, so a reset in the final
+    time step has no effect.) This means that the continuous-time msprime model
+    that we base this on is growing for total time T, but the SLiM model grows
+    in T-1 time steps. Furthermore, we'd like both the final and initial sizes
+    to be exactly what they are supposed to be. This amounts to approximating
+    exp(r*t) over the interval [0,T] by exp(r*t*T/(T-1)). Probably something
+    nicer could be done, but this is close. The approximation is better for
+    smaller growth rates.
+    """
+
+    def verify_pop_sizes(self, model, samples, generation_time=1, Q=1):
+        species = stdpopsim.get_species("HomSap")
+        contig = species.get_contig("chr17", left=1e7, right=1e7 + 1e4)
+        engine = stdpopsim.get_engine("slim")
+        sp_model = stdpopsim.DemographicModel(
+            id="test",
+            description="foo",
+            long_description="fooooooo",
+            generation_time=generation_time,
+            model=model,
+        )
+        ts = engine.simulate(
+            sp_model,
+            contig,
+            samples,
+            seed=123,
+            slim_burn_in=0.0,
+            verbosity=3,
+            slim_scaling_factor=Q,
+        )
+        slim_sizes = ts.metadata["SLiM"]["user_metadata"]["population_sizes"][0]
+        dd = model.debug()
+        T = ts.metadata["SLiM"]["cycle"]
+        for pop in slim_sizes:
+            k = [x.name for x in model.populations].index(pop)
+            pop_t = np.array(slim_sizes[pop][0]["t"])
+            pop_N = np.array(slim_sizes[pop][0]["N"])
+            # Mostly we expect dd_N and pop_N to be close; however, time
+            # discretization artifacts and the fact that addSubpopSplit
+            # is recorded by the logging differently than setSubpopulationSize
+            # means we need to check the adjacent time interval as well.
+            dd_N = dd.population_size_trajectory(np.floor((T - pop_t) * Q))[:, k] / Q
+            dd_N1 = (
+                dd.population_size_trajectory(np.floor((T - pop_t + 1) * Q))[:, k] / Q
+            )
+            assert np.all(
+                np.logical_or(
+                    np.isclose(pop_N, dd_N, rtol=0.01),
+                    np.isclose(pop_N, dd_N1, rtol=0.01),
+                )
+            )
+
+    @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
+    @pytest.mark.parametrize("generation_time", [1, 3])
+    @pytest.mark.parametrize("Q", [1, 3])
+    def test_pop_growth(self, generation_time, Q):
+        model = msprime.Demography()
+        model.add_population(initial_size=300, name="pop_0", growth_rate=0.003)
+        model.add_population_parameters_change(time=100, growth_rate=0.0)
+        samples = {"pop_0": int(300 / Q)}
+        self.verify_pop_sizes(model, samples, generation_time=generation_time, Q=Q)
+
+    @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
+    @pytest.mark.parametrize("generation_time", [1, 3])
+    @pytest.mark.parametrize("Q", [1, 3])
+    def test_pop_resize(self, generation_time, Q):
+        model = msprime.Demography()
+        model.add_population(initial_size=300, name="pop_0")
+        model.add_population_parameters_change(time=10, initial_size=160)
+        model.add_population_parameters_change(time=20, initial_size=450)
+        samples = {"pop_0": int(300 / Q)}
+        self.verify_pop_sizes(model, samples, generation_time=generation_time, Q=Q)
+
+    @pytest.mark.filterwarnings("ignore::stdpopsim.SLiMScalingFactorWarning")
+    @pytest.mark.parametrize("generation_time", [1, 3])
+    @pytest.mark.parametrize("Q", [1, 3])
+    def test_pop_split(self, generation_time, Q):
+        model = msprime.Demography()
+        model.add_population(initial_size=300, name="pop_0")
+        model.add_population(initial_size=210, name="pop_1", growth_rate=0.001)
+        model.add_population(initial_size=420, name="pop_2", growth_rate=-0.001)
+        model.add_population_split(
+            time=150, derived=["pop_1", "pop_2"], ancestral="pop_0"
+        )
+        samples = {"pop_1": int(210 / Q), "pop_2": int(420 / Q)}
+        self.verify_pop_sizes(model, samples, generation_time=generation_time, Q=Q)
+
+
 class TestPloidy:
     """
     Test that population sizes used in SLiM engine are scaled correctly
@@ -3054,7 +3299,7 @@ class TestPloidy:
         contig = stdpopsim.Contig.basic_contig(length=1000, ploidy=2)
         model = stdpopsim.PiecewiseConstantSize(N)
         with caplog.at_level(logging.DEBUG):
-            engine.simulate(model, contig, samples={"pop_0": 2}, verbosity=2)
+            engine.simulate(model, contig, samples={"pop_0": 2}, verbosity=2, seed=9)
         log_str = " ".join([rec.getMessage() for rec in caplog.records])
         # match: "1: p = sim.addSubpop(0, <SLiM population size>);"
         extract_ne = re.compile(".+1: p = sim.addSubpop\\(0, ([0-9]+)\\).+")
@@ -3092,7 +3337,7 @@ class TestPloidy:
         engine = stdpopsim.get_engine("slim")
         for ploidy in [1, 2]:
             contig = stdpopsim.Contig.basic_contig(length=1000, ploidy=ploidy)
-            ts = engine.simulate(model, contig, samples={"pop_0": 2})
+            ts = engine.simulate(model, contig, samples={"pop_0": 2}, seed=8)
             assert ts.num_individuals == 2
             assert ts.num_samples == 2 * ploidy
             individual = ts.tables.nodes.individual
@@ -3104,7 +3349,7 @@ class TestPloidy:
         model = stdpopsim.PiecewiseConstantSize(N)
         engine = stdpopsim.get_engine("slim")
         contig = stdpopsim.Contig.basic_contig(length=1000, ploidy=2)
-        ts = engine.simulate(model, contig, samples={"pop_0": 3})
+        ts = engine.simulate(model, contig, samples={"pop_0": 3}, seed=7)
         ts_hap = stdpopsim.utils.haploidize_individuals(ts)
         assert ts_hap.num_individuals == ts.num_individuals * 2
         for i, j in zip(ts.samples(), ts_hap.samples()):

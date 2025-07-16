@@ -2,6 +2,7 @@
 Infrastructure for defining information about species' genomes and genomic
 regions to be simulated.
 """
+
 import logging
 import warnings
 import attr
@@ -14,6 +15,25 @@ import stdpopsim
 logger = logging.getLogger(__name__)
 
 
+def _uniform_rate_map(left, right, length, rate):
+    """
+    Makes a uniform RateMap
+    """
+    pos = [
+        0.0,
+    ]
+    x = []
+    if left > 0:
+        pos.append(left)
+        x.append(np.nan)
+    pos.append(right)
+    x.append(rate)
+    if right < length:
+        pos.append(length)
+        x.append(np.nan)
+    return msprime.RateMap(position=pos, rate=x)
+
+
 @attr.s
 class Genome:
     """
@@ -21,8 +41,18 @@ class Genome:
 
     :ivar chromosomes: A list of :class:`.Chromosome` objects.
     :vartype chromosomes: list
+    :ivar assembly_name: The name of the genome assembly.
+    :vartype assembly_name: str
+    :ivar assembly_accession: The ID of the genome assembly accession.
+    :vartype assembly_accession: str
+    :ivar assembly_source: The source of the genome assembly data.
+        (for instance "ensembl"). Use "manual" if manually entered.
+    :vartype assembly_source: str
+    :ivar assembly_build_version: The version of the genome assembly build,
+        or "None" if manually entered.
+    :vartype assembly_build_version: str
     :ivar bacterial_recombination: Whether recombination is via horizontal gene
-        transfer (if this is True) or via crossover and possibly gene
+        transfer (if this is True) or via crossing-over and possibly gene
         conversion (if this is False). Default: False.
     :vartype bacterial_recombination: bool
     :ivar citations: A list of :class:`.Citation` objects
@@ -33,11 +63,11 @@ class Genome:
     :vartype length: int
     """
 
-    # TODO document the assembly_name and accession
-
     chromosomes = attr.ib(factory=list)
-    assembly_name = attr.ib(default=None, kw_only=True)
-    assembly_accession = attr.ib(default=None, kw_only=True)
+    assembly_name = attr.ib(type=str, default=None, kw_only=True)
+    assembly_accession = attr.ib(type=str, default=None, kw_only=True)
+    assembly_source = attr.ib(type=str, default=None, kw_only=True)
+    assembly_build_version = attr.ib(type=str, default=None, kw_only=True)
     bacterial_recombination = attr.ib(type=bool, default=False, kw_only=True)
     citations = attr.ib(factory=list, kw_only=True)
 
@@ -88,6 +118,8 @@ class Genome:
             chromosomes=chromosomes,
             assembly_name=genome_data["assembly_name"],
             assembly_accession=genome_data["assembly_accession"],
+            assembly_source=genome_data["assembly_source"],
+            assembly_build_version=genome_data["assembly_build_version"],
             bacterial_recombination=bacterial_recombination,
             citations=citations,
         )
@@ -155,7 +187,7 @@ class Genome:
     def mean_recombination_rate(self):
         """
         The length-weighted mean recombination rate across all chromosomes.
-        (Note that this is the rate of crossovers, not all double-stranded breaks.)
+        (Note that this is the rate of crossing-over, not all double-stranded breaks.)
         """
         length = self.length
         mean_recombination_rate = 0
@@ -183,15 +215,15 @@ class Genome:
 class Chromosome:
     """
     Class representing a single chromosome for a species. Note that although
-    the recombination rate for a Chromosome is the rate of crossovers,
-    the recombination map for a Contig gives the rate of both crossovers
+    the recombination rate for a Chromosome is the rate of crossing-over,
+    the recombination map for a Contig gives the rate of both crossing-over
     and gene conversion, so will differ if the gene conversion fraction is nonzero.
 
     :ivar str ~.id: The string identifier for the chromosome.
     :ivar int length: The length of the chromosome.
     :ivar float mutation_rate: The mutation rate used when simulating this
         chromosome.
-    :ivar float recombination_rate: The rate of crossovers used when simulating
+    :ivar float recombination_rate: The rate of crossing-over used when simulating
         this chromosome (if not using a genetic map).
     :ivar float gene_conversion_fraction: The gene conversion fraction used when
         simulating this chromosome.
@@ -225,25 +257,25 @@ class Contig:
     and ``interval_list``. These must be of the same length, and the k-th DFE
     applies to the k-th interval; see :meth:`.add_dfe` for more information.
 
-    The contig may be a segment of a named chromosome. If so, the original
-    coordinate system is used for :meth:`.add_dfe` and :meth:`add_single_site`.
-
     :ivar mutation_rate: The rate of mutation per base per generation.
     :vartype mutation_rate: float
     :ivar ploidy: The ploidy of the contig. Defaults to 2 (diploid).
     :vartype ploidy: int
+    :ivar genetic_map: The genetic map for the region, that gives
+        the rates of crossing-over. A :class:`.GeneticMap` object.
+    :vartype genetic_map: .GeneticMap
     :ivar recombination_map: The recombination map for the region, that gives
         the rates of double-stranded breaks. Note that if gene conversion
         fraction is nonzero, then this map can have a larger rate than the
         corresponding chromosome's recombination rate, since the chromosome's
-        rate describes only crossovers. A :class:`msprime.RateMap` object.
+        rate describes only crossing-over. A :class:`msprime.RateMap` object.
     :vartype recombination_map: msprime.RateMap
     :ivar bacterial_recombination: Whether the model of recombination is
         by horizontal gene transfer or not (default is False, i.e.,
-        recombination is by crossovers and possibly gene conversion).
+        recombination is by crossing-over and possibly gene conversion).
     :ivar gene_conversion_fraction: The fraction of recombinations that resolve
         as gene conversion events. The recombination map gives the rates of
-        *both* crossovers and gene conversions, with a fraction of gene
+        *both* crossing-over and gene conversion, with a fraction of gene
         conversions given by this value. Defaults to None, i.e., no gene
         conversion. Must be None or between 0 and 1. Must be None if
         bacterial_recombination is True.
@@ -267,11 +299,11 @@ class Contig:
     :ivar interval_list: A list of :class:`np.array` objects containing integers.
         By default, the inital interval list spans the whole chromosome with the
         neutral DFE.
-    :ivar original_coordinates: The location of the contig on a named chromosome,
+    :ivar coordinates: The location of the contig on a named chromosome,
         as a tuple of the form `(chromosome, left, right)`. If `None`, the contig
         is assumed to be generic (i.e. it does not inherit a coordinate system
         from a larger chromosome).
-    :vartype original_coordinates: tuple
+    :vartype coordinates: tuple
 
     .. note::
         To run stdpopsim simulations with alternative, user-specified mutation,
@@ -300,14 +332,14 @@ class Contig:
     exclusion_mask = attr.ib(default=None)
     dfe_list = attr.ib(factory=list)
     interval_list = attr.ib(factory=list)
-    original_coordinates = attr.ib(default=None, type=tuple)
+    coordinates = attr.ib(default=None, type=tuple)
 
     def __attrs_post_init__(self):
-        if self.original_coordinates is None:
-            self.original_coordinates = (None, 0, int(self.length))
-        _, left, right = self.original_coordinates
+        if self.coordinates is None:
+            self.coordinates = (None, 0, int(self.length))
+        _, left, right = self.coordinates
         self.add_dfe(
-            [[left, right]],
+            np.array([[left, right]]),
             stdpopsim.dfe.neutral_dfe(),
         )
 
@@ -367,9 +399,10 @@ class Contig:
         species,
         chromosome=None,
         genetic_map=None,
-        length_multiplier=1,
+        length_multiplier=None,
         length=None,
         mutation_rate=None,
+        recombination_rate=None,
         use_species_gene_conversion=False,
         inclusion_mask=None,
         exclusion_mask=None,
@@ -395,6 +428,16 @@ class Contig:
         ):
             raise ValueError(
                 "Cannot use species gene conversion with bacterial recombination."
+            )
+        # TODO: remove deprecated argument in a release or two, see issue #1349.
+        if length_multiplier is None:
+            length_multiplier = 1
+        else:
+            warnings.warn(
+                stdpopsim.DeprecatedFeatureWarning(
+                    "The 'length_multiplier' option is deprecated and will be removed "
+                    "in a future release. Use 'left' and 'right' instead."
+                )
             )
         gene_conversion_fraction = None
         gene_conversion_length = None
@@ -435,7 +478,11 @@ class Contig:
                         )
             if mutation_rate is None:
                 mutation_rate = u_tot / L_tot
-            r = r_tot / L_tot
+            if recombination_rate is None:
+                r = r_tot / L_tot
+            else:
+                r = recombination_rate
+                r_tot = r * L_tot
             if use_species_gene_conversion is True:
                 if gcf_tot > 0:
                     gene_conversion_fraction = gcf_tot / r_tot
@@ -487,24 +534,31 @@ class Contig:
 
             if genetic_map is None:
                 gm = None
+                if recombination_rate is None:
+                    r = chrom.recombination_rate
+                else:
+                    r = recombination_rate
                 if length_multiplier != 1:
                     logger.debug(
                         f"Making flat chromosome {length_multiplier} * {chrom.id}"
                     )
+                    recomb_map = msprime.RateMap.uniform(
+                        round(length_multiplier * chrom.length), r
+                    )
                 else:
                     logger.debug(
-                        f"Making flat contig of length {right - left} from {chrom.id}"
+                        f"Making flat contig from {left} to {right} for {chrom.id}"
                     )
-                recomb_map = msprime.RateMap.uniform(
-                    right - left, chrom.recombination_rate
-                )
+                    recomb_map = _uniform_rate_map(left, right, chrom.length, r)
             else:
                 if length_multiplier != 1:
-                    raise ValueError("Cannot use length multiplier with empirical maps")
-                logger.debug(f"Getting map for {chrom.id} from {genetic_map}")
+                    raise ValueError("Cannot use length multiplier with genetic map")
+                if recombination_rate is not None:
+                    raise ValueError("Cannot use recombination rate with genetic map")
+                logger.debug(f"Getting genetic map for {chrom.id} from {genetic_map}")
                 gm = species.get_genetic_map(genetic_map)
                 recomb_map = gm.get_chromosome_map(chrom.id)
-                recomb_map = recomb_map.slice(left=left, right=right, trim=True)
+                recomb_map = recomb_map.slice(left=left, right=right)
 
             inclusion_intervals = None
             exclusion_intervals = None
@@ -517,7 +571,7 @@ class Contig:
                     )
                 else:
                     inclusion_intervals = inclusion_mask
-                inclusion_intervals = stdpopsim.utils.clip_and_shift_intervals(
+                inclusion_intervals = stdpopsim.utils.clip_intervals(
                     inclusion_intervals, left, right
                 )
             if exclusion_mask is not None:
@@ -529,7 +583,7 @@ class Contig:
                     )
                 else:
                     exclusion_intervals = exclusion_mask
-                exclusion_intervals = stdpopsim.utils.clip_and_shift_intervals(
+                exclusion_intervals = stdpopsim.utils.clip_intervals(
                     exclusion_intervals, left, right
                 )
 
@@ -562,9 +616,17 @@ class Contig:
                 gene_conversion_length=gene_conversion_length,
                 inclusion_mask=inclusion_intervals,
                 exclusion_mask=exclusion_intervals,
-                original_coordinates=(chromosome, left, right),
+                coordinates=(chromosome, left, right),
                 ploidy=ploidy,
             )
+
+        if contig.gene_conversion_length is not None:
+            if contig.length <= contig.gene_conversion_length:
+                raise ValueError(
+                    "Cannot simulate a contig whose length is shorter "
+                    "than the gene conversion length "
+                    f"({contig.gene_conversion_length}bp)."
+                )
 
         return contig
 
@@ -573,18 +635,29 @@ class Contig:
         return self.recombination_map.sequence_length
 
     @property
+    def original_coordinates(self):
+        warnings.warn(
+            stdpopsim.DeprecatedFeatureWarning(
+                "The original_coordinates property is deprecated, "
+                "since contigs are no longer shifted to be relative to their "
+                "left endpoint: use Contig.coordinates instead."
+            )
+        )
+        return self.coordinates
+
+    @property
     def origin(self):
         """
         The location of the contig on a named chromosome as a string with format,
         "chromosome:left-right"; or None if a generic contig.
         """
-        chromosome, left, right = self.original_coordinates
+        chromosome, left, right = self.coordinates
         if chromosome is None:
             return None
         else:
             return f"{chromosome}:{left}-{right}"
 
-    def dfe_breakpoints(self, relative_coordinates=True):
+    def dfe_breakpoints(self, *, relative_coordinates=None):
         """
         Returns two things: the sorted vector of endpoints of all intervals across
         all DFEs in the contig, and a vector of integer labels for these intervals,
@@ -607,21 +680,23 @@ class Contig:
         ``breaks[k]``.  Some intervals may not be covered by a DFE, in which
         case they will have the label ``-1`` (beware of python indexing!).
 
-        :param bool relative_coordinates: If True, the returned breakpoints
-            will be relative to the start of the contig, rather than to the
-            start of the chromosome to which to contig belongs.
-
         :return: A tuple (breaks, dfe_labels).
         """
+        if relative_coordinates is not None:
+            warnings.warn(
+                stdpopsim.DeprecatedFeatureWarning(
+                    "The relative_coordinates argument is deprecated "
+                    "(and no longer needed),"
+                    "because contigs are no longer shifted to be relative to their "
+                    "left endpoint."
+                )
+            )
         breaks = np.unique(
             np.vstack(self.interval_list + [[[0, int(self.length)]]])  # also sorted
         )
         dfe_labels = np.full(len(breaks) - 1, -1, dtype="int")
         for j, intervals in enumerate(self.interval_list):
             dfe_labels[np.isin(breaks[:-1], intervals[:, 0], assume_unique=True)] = j
-        if not relative_coordinates:
-            _, left, _ = self.original_coordinates
-            breaks += left
         return breaks, dfe_labels
 
     def clear_dfes(self):
@@ -643,14 +718,17 @@ class Contig:
         object is added more than once.
 
         For instance, if we do
-        ```
-        a1 = np.array([[0, 100]])
-        a2 = np.array([[50, 120]])
-        contig.add_dfe(a1, dfe1)
-        contig.add_dfe(a2, dfe2)
-        ```
-        then ``dfe1`` applies to the region from 0 to 50 and ``dfe2`` applies
-        to the region from 50 to 120.
+
+        .. code-block:: python
+
+            a1 = np.array([[0, 100]])
+            a2 = np.array([[50, 120]])
+            contig.add_dfe(a1, dfe1)
+            contig.add_dfe(a2, dfe2)
+
+        then ``dfe1`` applies to the region from 0 to 50 (including 0 but not
+        50) and ``dfe2`` applies to the region from 50 to 120 (including 50 but
+        not 120).
 
         Any of the ``intervals`` that fall outside of the contig will be
         clipped to the contig boundaries. If no ``intervals`` overlap the
@@ -659,9 +737,9 @@ class Contig:
         :param array intervals: A valid set of intervals.
         :param DFE dfe: A DFE object.
         """
-        _, left, right = self.original_coordinates
-        intervals = stdpopsim.utils.clip_and_shift_intervals(intervals, left, right)
-        stdpopsim.utils._check_intervals_validity(intervals, start=0, end=self.length)
+        _, left, right = self.coordinates
+        intervals = stdpopsim.utils.clip_intervals(intervals, left, right)
+        stdpopsim.utils._check_intervals_validity(intervals, start=left, end=right)
         for j, ints in enumerate(self.interval_list):
             self.interval_list[j] = stdpopsim.utils.mask_intervals(ints, intervals)
         self.dfe_list.append(DFE)
@@ -764,7 +842,7 @@ class Contig:
             mut_types = contig.mutation_types()
             for m in muts:
                 dfe_ids = [mut_types[k]["dfe_id"] for md in m.metadata["muation_list"]]
-                print(f"Mutation {m.id} has mutations from DFE(s) {','.join(dfe_ids)")
+                print(f"Mutation {m.id} has mutations from DFE(s) {','.join(dfe_ids)}")
 
         """
         id = 0
@@ -784,15 +862,15 @@ class Contig:
     def __str__(self):
         gmap = "None" if self.genetic_map is None else self.genetic_map.id
         s = (
-            "Contig(length={:.2G}, recombination_rate={:.2G}, "
-            "mutation_rate={:.2G}, bacterial_recombination={}, "
+            "Contig(length={:.2G}, mutation_rate={:.2G}, "
+            "recombination_rate={:.2G}, bacterial_recombination={}, "
             "gene_conversion_fraction={}, gene_conversion_length={}, "
             "genetic_map={}, origin={}, dfe_list={}, "
             "interval_list={})"
         ).format(
             self.length,
-            self.recombination_map.mean_rate,
             self.mutation_rate,
+            self.recombination_map.mean_rate,
             self.bacterial_recombination,
             self.gene_conversion_fraction,
             self.gene_conversion_length,

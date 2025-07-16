@@ -6,9 +6,17 @@ http://www.sphinx-doc.org/en/master/extdev/index.html#dev-extensions
 
 This is based on the todo tutorial:
 http://www.sphinx-doc.org/en/master/development/tutorials/todo.html
+
+Tip: one way to figure out how to add a particular type of element
+using docutils.nodes is to look at the docutils docs:
+https://docutils.sourceforge.io/docs/ref/doctree.html
+for the element type you want, and then see if docutils.nodes
+has a constructor method for that type.
 """
+
 import csv
 import pathlib
+import re
 
 from docutils import nodes
 from sphinx.util.docutils import SphinxDirective
@@ -93,6 +101,7 @@ class SpeciesCatalogDirective(SphinxDirective):
                     if stdpopsim.CiteReason.GEN_TIME in citation.reasons
                 ],
             ),
+            ("Ploidy", species.ploidy, None),
             (
                 "Population size",
                 species.population_size,
@@ -113,7 +122,7 @@ class SpeciesCatalogDirective(SphinxDirective):
         ]
         return self.make_field_list(data)
 
-    def citation_list(self, citable):
+    def citation_list(self, citable, reasons=False):
         bullet_list = nodes.bullet_list()
         for citation in citable.citations:
             list_item = nodes.list_item()
@@ -122,6 +131,10 @@ class SpeciesCatalogDirective(SphinxDirective):
             para += nodes.reference(
                 internal=False, refuri=citation.doi, text=citation.doi
             )
+            if reasons:
+                para += nodes.paragraph(
+                    text="(" + ", ".join(citation.reasons) + ")",
+                )
             list_item += para
             bullet_list += list_item
         return bullet_list
@@ -296,8 +309,8 @@ class SpeciesCatalogDirective(SphinxDirective):
     def chromosomes_table(self, species):
 
         table = nodes.table()
-        tgroup = nodes.tgroup(cols=4)
-        for _ in range(4):
+        tgroup = nodes.tgroup(cols=5)
+        for _ in range(5):
             colspec = nodes.colspec(colwidth=1)
             tgroup.append(colspec)
         table += tgroup
@@ -307,6 +320,10 @@ class SpeciesCatalogDirective(SphinxDirective):
         row = nodes.row()
         entry = nodes.entry()
         entry += nodes.paragraph(text="ID")
+        row += entry
+
+        entry = nodes.entry()
+        entry += nodes.paragraph(text="Ploidy")
         row += entry
 
         entry = nodes.entry()
@@ -328,6 +345,10 @@ class SpeciesCatalogDirective(SphinxDirective):
             row = nodes.row()
             entry = nodes.entry()
             entry += nodes.paragraph(text=chrom.id)
+            row += entry
+
+            entry = nodes.entry()
+            entry += nodes.paragraph(text="{:d}".format(chrom.ploidy))
             row += entry
 
             entry = nodes.entry()
@@ -397,6 +418,11 @@ class SpeciesCatalogDirective(SphinxDirective):
         section = nodes.section(ids=[mid])
         section += nodes.title(text=model.description)
         section += nodes.paragraph(text=model.long_description)
+        if model.qc_model is None:
+            msg = "This model has not undergone QC."
+            field = nodes.warning()
+            field += nodes.paragraph(text=msg)
+            section += field
         section += nodes.rubric(text="Details")
         section += self.model_summary(model)
         section += nodes.rubric(text="Populations")
@@ -502,9 +528,131 @@ class SpeciesCatalogDirective(SphinxDirective):
         section = nodes.section(ids=[dfe_id])
         section += nodes.title(text=dfe.id)
         section += nodes.paragraph(text=dfe.description)
+        section += nodes.paragraph(text=dfe.long_description)
+        if dfe.qc_dfe is None:
+            msg = "This DFE has not undergone QC."
+            field = nodes.warning()
+            field += nodes.paragraph(text=msg)
+            section += field
         section += nodes.rubric(text="Citations")
         section += self.citation_list(dfe)
+        section += nodes.rubric(text="DFE parameters")
+        section += self.dfe_parameter_table(species, dfe)
         return [target, section]
+
+    def dfe_parameter_table(self, species, dfe):
+        table = nodes.table()
+        # proportion, distribution type, arguments, dominance
+        tgroup = nodes.tgroup(cols=4)
+        for _ in range(4):
+            colspec = nodes.colspec(colwidth=1)
+            tgroup.append(colspec)
+
+        table += tgroup
+
+        thead = nodes.thead()
+        tgroup += thead
+        row = nodes.row()
+        entry = nodes.entry()
+        entry += nodes.paragraph(text="Proportion of mutations")
+        row += entry
+        entry = nodes.entry()
+        entry += nodes.paragraph(text="Distribution type")
+        row += entry
+        entry = nodes.entry()
+        entry += nodes.paragraph(text="Parameters")
+        row += entry
+        entry = nodes.entry()
+        entry += nodes.paragraph(text="Dominance")
+        row += entry
+        thead.append(row)
+
+        def parse_mutation_type(mt):
+            dt = mt.distribution_type
+            da = mt.distribution_args
+            if dt == "s":
+                # currently we only use this for rlnorm and unif
+                bits = re.split("[ ()*]", da[0])
+                assert bits[0] == "return", "Unrecognized mutation type string"
+                if "rlnorm" in bits:
+                    dt = "ln" if bits[1] == "-1" else "lp"
+                    da = (float(bits[bits.index("rlnorm") + 2]), float(bits[-2]))
+                elif "runif" in bits:
+                    dt = "u"
+                    da = (float(bits[6]), float(bits[10]))
+                else:
+                    raise ValueError("Unrecognized mutation type string")
+
+            if dt == "f":
+                label = "Fixed s"
+                params = f"s = {da[0]:.3f}"
+            elif dt == "e":
+                label = "Exponential"
+                params = f"mean = {da[0]:.3f}"
+            elif dt == "g":
+                label = "Gamma"
+                params = f"mean = {da[0]:.3f}, " f"shape = {da[1]:.3f}"
+            elif dt == "n":
+                label = "Normal"
+                params = f"mean = {da[0]:.3f}, " f"sd = {da[1]:.3f}"
+            elif dt == "w":
+                label = "Weibull"
+                params = f"scale = {da[0]:.3f}, " f"shape = {da[1]:.3f}"
+            elif dt == "u":
+                label = "Uniform"
+                params = f"min = {da[0]:.3f}, " f"max = {da[1]:.3f}"
+            elif dt == "lp":
+                label = "Positive LogNormal"
+                params = f"meanlog = {da[0]:.3f}, " f"sdlog = {da[1]:.3f}"
+            elif dt == "ln":
+                label = "Negative LogNormal"
+                params = f"meanlog = {da[0]:.3f}, " f"sdlog = {da[1]:.3f}"
+
+            if mt.dominance_coeff is None:
+                h_list = []
+                for j in range(len(mt.dominance_coeff_list)):
+                    slist = (
+                        ["-Inf"]
+                        + [f"{s:.3f}" for s in mt.dominance_coeff_breaks]
+                        + ["Inf"]
+                    )
+                    if dt in ["e", "g", "w"]:
+                        if da[0] < 0:
+                            slist[0] = "0"
+                        else:
+                            slist[-1] = "0"
+                    elif dt == "lp":
+                        slist[0] = "0"
+                    elif dt == "ln":
+                        slist[-1] = "0"
+                    mins = slist[j]
+                    maxs = slist[j + 1]
+                    h_list.append(
+                        f"{mt.dominance_coeff_list[j]:.3f} on " f"[{mins}, " f"{maxs})"
+                    )
+                h = "h = " + "; ".join(h_list)
+            else:
+                h = f"h = {mt.dominance_coeff:.3f}"
+            return label, params, h
+
+        rows = []
+        for mt, prop in zip(dfe.mutation_types, dfe.proportions):
+            if prop > 0:
+                row = nodes.row()
+                rows.append(row)
+                entry = nodes.entry()
+                entry += nodes.paragraph(text=f"{100*prop:.1f}%")
+                row += entry
+                for label in parse_mutation_type(mt):
+                    entry = nodes.entry()
+                    entry += nodes.paragraph(text=label)
+                    row += entry
+
+        tbody = nodes.tbody()
+        tbody.extend(rows)
+        tgroup += tbody
+
+        return table
 
     def dfes_table(self, species):
         table = nodes.table()
@@ -572,6 +720,19 @@ class SpeciesCatalogDirective(SphinxDirective):
         # genomes:
         genome_section = nodes.section(ids=[f"sec_catalog_{species.id}_genome"])
         genome_section += nodes.title(text="Genome")
+        genome_section += self.make_field_list(
+            [
+                (
+                    "Genome assembly name",
+                    species.genome.assembly_name,
+                    [
+                        citation
+                        for citation in species.genome.citations
+                        if stdpopsim.CiteReason.ASSEMBLY in citation.reasons
+                    ],
+                )
+            ]
+        )
         if species.genome.bacterial_recombination is True:
             genome_section += self.make_field_list(
                 [
@@ -602,6 +763,8 @@ class SpeciesCatalogDirective(SphinxDirective):
             text="Mutation and recombination rates "
             "are in units of per bp and per generation."
         )
+        genome_section += nodes.rubric(text="Citations")
+        genome_section += self.citation_list(species.genome, reasons=True)
         section += genome_section
         section += nodes.transition()
         # genetic maps:

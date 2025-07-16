@@ -1,6 +1,7 @@
 """
 Tests for classes that hold information about genomic region to be simulated.
 """
+
 import numpy as np
 import pytest
 import msprime
@@ -75,6 +76,11 @@ class TestContig(object):
                     gene_conversion_fraction=0.8,
                     gene_conversion_length=bad_len,
                 )
+
+    def test_gc_length_error(self):
+        sp = stdpopsim.get_species("StrAga")
+        with pytest.raises(ValueError, match="shorter than the gene conv"):
+            _ = sp.get_contig(length=100000)
 
     def test_default_dfe(self):
         contig = stdpopsim.Contig.basic_contig(length=100)
@@ -203,16 +209,47 @@ class TestContig(object):
                 assert contig.is_neutral is (neutral and dist == "f")
 
     def test_chromosome_segment(self):
-        chrom = "chr2"
-        interval = [100, 130]
-        species = stdpopsim.get_species("HomSap")
-        contig = species.get_contig(chrom, left=interval[0], right=interval[1])
-        chromosome, left, right = contig.original_coordinates
-        assert chromosome == chrom
-        assert left == interval[0]
-        assert right == interval[1]
-        assert contig.length == interval[1] - interval[0]
-        assert contig.origin == f"{chromosome}:{left}-{right}"
+        species = stdpopsim.get_species("AnaPla")
+        chrom = species.genome.chromosomes[1]
+        length = chrom.length
+        for interval in [(0, 1341), (5020, 12850), (4249, length), (0, length)]:
+            contig = species.get_contig(chrom.id, left=interval[0], right=interval[1])
+            chromosome, left, right = contig.coordinates
+            assert chromosome == chrom.id
+            assert left == interval[0]
+            assert right == interval[1]
+            assert contig.origin == f"{chromosome}:{left}-{right}"
+            assert contig.length == length
+
+    def test_not_simulated_outside_region(self):
+        # test that when left, right are specified
+        # we legit don't simulate anything outside that region
+        species = stdpopsim.get_species("AraTha")
+        model = stdpopsim.PiecewiseConstantSize(100)
+        samples = {"pop_0": 50}
+
+        left, right = 100000, 900000
+        contig = species.get_contig("1", left=left, right=right)
+
+        engine = stdpopsim.get_engine("msprime")
+        ts = engine.simulate(
+            model,
+            contig,
+            samples,
+            seed=236,
+        )
+
+        assert ts.sequence_length > right
+        assert ts.num_sites > 0
+        assert left in ts.breakpoints()
+        assert right in ts.breakpoints()
+        assert left <= min(ts.sites_position)
+        assert max(ts.sites_position) < right
+        assert ts.num_trees > 2
+        for t in ts.trees(root_threshold=2):
+            tl, tr = t.interval
+            if tl > right or tr < left:
+                assert t.num_roots == 0
 
     def test_chromosome_segment_with_genetic_map(self):
         chr_id = "chr2"
@@ -222,11 +259,11 @@ class TestContig(object):
         genmap = "HapMapII_GRCh38"
         contig = species.get_contig(chr_id, left=left, right=right, genetic_map=genmap)
         chrom = species.get_contig(chr_id, genetic_map=genmap)
-        assert contig.recombination_map.get_rate(0) == chrom.recombination_map.get_rate(
-            left
-        )
         assert contig.recombination_map.get_rate(
-            contig.length - 1
+            left
+        ) == chrom.recombination_map.get_rate(left)
+        assert contig.recombination_map.get_rate(
+            right - 1
         ) == chrom.recombination_map.get_rate(right - 1)
 
     def test_chromosome_segment_with_mask(self):
@@ -242,7 +279,11 @@ class TestContig(object):
             (right - offset, right + offset),
             (right + offset, right + 2 * offset),
         ]
-        clipped_mask = [(0, offset), (offset, 2 * offset), (length - offset, length)]
+        clipped_mask = [
+            (left, left + offset),
+            (left + offset, left + 2 * offset),
+            (right - offset, right),
+        ]
         species = stdpopsim.get_species("HomSap")
         contig_inclusion = species.get_contig(
             chromosome=chr_id,
@@ -268,7 +309,7 @@ class TestContig(object):
     def test_generic_contig_origin(self):
         length = 42
         contig = stdpopsim.Contig.basic_contig(length=length)
-        chromosome, left, right = contig.original_coordinates
+        chromosome, left, right = contig.coordinates
         assert chromosome is None
         assert left == 0
         assert right == length
@@ -279,28 +320,39 @@ class TestContig(object):
         species = stdpopsim.get_species("HomSap")
         interval = [100000, 200000]
         original_sweep_coord = 100100
-        shifted_sweep_coord = original_sweep_coord - interval[0]
+        bad_sweep_coord = original_sweep_coord - interval[0]
         contig = species.get_contig(chrom, left=interval[0], right=interval[1])
         # Correctly specified coordinate system
         contig.add_single_site(
             id="sweep",
             coordinate=original_sweep_coord,
         )
-        assert contig.interval_list[1][0, 0] == shifted_sweep_coord
         # Coordinate system mismatch. Shifted coordinate falls outside of
         # `interval` so the added DFE has empty intervals: throw a warning
         with pytest.warns(UserWarning, match="No intervals remain"):
             contig.add_single_site(
                 id="sweep",
-                coordinate=shifted_sweep_coord,
+                coordinate=bad_sweep_coord,
             )
+
+    def test_original_coordinates(self):
+        species = stdpopsim.get_species("AnaPla")
+        contig = species.get_contig("2", left=10000, right=392342)
+        c, x, y = contig.coordinates
+        with pytest.warns(
+            stdpopsim.DeprecatedFeatureWarning, match="no longer shifted"
+        ):
+            oc, ox, oy = contig.original_coordinates
+        assert c == oc
+        assert x == ox
+        assert y == oy
 
     def test_add_dfe_coordinate_system(self):
         chrom = "chr2"
         species = stdpopsim.get_species("HomSap")
         contig_interval = [200000, 300000]
-        original_dfe_interval = [[190000, 210000], [290000, 310000]]
-        shifted_dfe_interval = [[0, 10000], [90000, 100000]]
+        original_dfe_interval = np.array([[190000, 210000], [290000, 310000]])
+        bad_dfe_interval = np.array([[0, 10000], [90000, 100000]])
         contig = species.get_contig(
             chrom, left=contig_interval[0], right=contig_interval[1]
         )
@@ -309,12 +361,11 @@ class TestContig(object):
             intervals=original_dfe_interval,
             DFE=self.example_dfe,
         )
-        np.testing.assert_array_equal(contig.interval_list[1], shifted_dfe_interval)
         # Coordinate system mismatch. Shifted DFE intervals all fall outside of
         # `contig.origin` so the added DFE is empty: throw a warning
         with pytest.warns(UserWarning, match="No intervals remain"):
             contig.add_dfe(
-                intervals=shifted_dfe_interval,
+                intervals=bad_dfe_interval,
                 DFE=self.example_dfe,
             )
 
@@ -330,11 +381,18 @@ class TestContig(object):
             intervals=dfe_interval,
             DFE=self.example_dfe,
         )
-        shifted_breakpoints, _ = contig.dfe_breakpoints(relative_coordinates=True)
-        original_breakpoints, _ = contig.dfe_breakpoints(relative_coordinates=False)
-        for x, y in zip(shifted_breakpoints, original_breakpoints):
-            assert x + contig_interval[0] == y
+        breakpoints, _ = contig.dfe_breakpoints()
+        for x, y in zip(breakpoints, [0, 200000, 210000, 290000, 300000]):
+            assert x == y
 
+        with pytest.warns(
+            stdpopsim.DeprecatedFeatureWarning, match="relative_coordinates argument"
+        ):
+            ob, _ = contig.dfe_breakpoints(relative_coordinates=True)
+        for x, y in zip(breakpoints, ob):
+            assert x == y
+
+    @pytest.mark.filterwarnings("ignore::stdpopsim.DeprecatedFeatureWarning")
     def test_chromosome_segment_fails_with_length_multiplier(self):
         chrom = "chr2"
         species = stdpopsim.get_species("HomSap")
@@ -444,3 +502,10 @@ class TestGeneConversion(object):
         assert np.isclose(
             contig.recombination_map.mean_rate, chrom.recombination_rate / (1 - gc_frac)
         )
+        species = stdpopsim.get_species("HomSap")
+        with pytest.raises(
+            ValueError, match="Cannot use recombination rate with genetic map"
+        ):
+            _ = species.get_contig(
+                "chr22", genetic_map="HapMapII_GRCh38", recombination_rate=1e-8
+            )
