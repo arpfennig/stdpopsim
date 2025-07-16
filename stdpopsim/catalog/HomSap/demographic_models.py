@@ -1536,7 +1536,6 @@ def _papuans_bougainville_10j19():
     m_Papuan_Bougainville = 3.14e-4
     # older migrations
     m_Eurasian_Papuan = 5.72e-4
-    m_Eurasian_Bougainville = 5.72e-4
     m_Eurasian_Ghost = 4.42e-4
 
     migration_matrix = [[0] * len(populations) for _ in range(len(populations))]
@@ -1673,6 +1672,9 @@ def _papuans_bougainville_10j19():
             time=Tb_Ghost, initial_size=Nb_Ghost, population_id=pop["Ghost"]
         ),
         # migration changes
+        msprime.MigrationRateChange(
+            time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["CHB"], pop["Bougainville"])
+        ),
         msprime.MigrationRateChange(
             time=T_EU_AS_split, rate=0, matrix_index=(pop["CHB"], pop["CEU"])
         ),
