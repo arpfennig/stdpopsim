@@ -1549,8 +1549,8 @@ def _papuans_bougainville_10j19():
     migration_matrix[pop["Papuan"]][pop["CHB"]] = m_AS_Papuan
     # migration_matrix[pop["CHB"]][pop["Bougainville"]] = m_AS_Bougainville
     # migration_matrix[pop["Bougainville"]][pop["CHB"]] = m_AS_Bougainville
-    migration_matrix[pop["Bougainville"]][pop["Papuan"]] = m_Papuan_Bougainville
-    migration_matrix[pop["Papuan"]][pop["Bougainville"]] = m_Papuan_Bougainville
+    # migration_matrix[pop["Bougainville"]][pop["Papuan"]] = m_Papuan_Bougainville
+    # migration_matrix[pop["Papuan"]][pop["Bougainville"]] = m_Papuan_Bougainville
 
     # splits
     T_Papuan_Bougainville_split = 700
@@ -1674,6 +1674,9 @@ def _papuans_bougainville_10j19():
         # migration changes
         msprime.MigrationRateChange(
             time=0, rate=m_AS_Bougainville, matrix_index=(pop["CHB"], pop["Bougainville"])
+        ),
+        msprime.MigrationRateChange(
+            time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Papuan"], pop["Bougainville"])
         ),
         msprime.MigrationRateChange(
             time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["CHB"], pop["Bougainville"])
