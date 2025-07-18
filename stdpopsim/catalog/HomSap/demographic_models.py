@@ -1607,9 +1607,6 @@ def _papuans_bougainville_10j19():
         msprime.MassMigration(
             time=T_Papuan_Bougainville_split, source=pop["Bougainville"], destination=pop["Papuan"]
         ),
-        msprime.PopulationParametersChange(
-            time=T_Papuan_Bougainville_split, initial_size=N_Bougainville, population_id=pop["Bougainville"]
-        ),
         msprime.MassMigration(
             time=T_EU_AS_split, source=pop["CEU"], destination=pop["CHB"]
         ),
