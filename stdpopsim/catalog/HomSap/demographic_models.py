@@ -1903,6 +1903,8 @@ def _papuans_bougainville_10j19_simple():
     # splits
     T_Papuan_Bougainville_split = 700
     T_EU_AS_split = 1293
+    T_OOA_split = 1758  # Out-of-Africa split
+    T_Papuan_split = 1784  # Papuan split
     T_NeaA_Nea1_split = 3375
     T_DenA_Den1_split = 12500
     T_Den_Nea_split = 15090
@@ -1950,6 +1952,12 @@ def _papuans_bougainville_10j19_simple():
         ),
         msprime.PopulationParametersChange(
             time=T_EU_AS_split, initial_size=N_EU_AS, population_id=pop["CHB"]
+        ),
+        msprime.MassMigration(
+            time=T_OOA_split, source=pop["CHB"], destination=pop["YRI"]
+        ),
+        msprime.MassMigration(
+            time=T_Papuan_split, source=pop["Papuan"], destination=pop["YRI"]
         ),
         # archaic lineage splits
         msprime.MassMigration(
