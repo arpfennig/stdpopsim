@@ -2030,7 +2030,7 @@ def _papuans_bougainville_10j19_simple():
             time=T_Den2_Papuan_mig,
             proportion=m_Den2_Papuan,
             source=pop["Papuan"],
-            destination=pop["Den2"],
+            destination=pop["Den1"],
         ),
         msprime.MassMigration(
             time=T_Nea1_Eurasian_mig,
