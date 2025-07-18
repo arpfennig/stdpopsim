@@ -1676,7 +1676,13 @@ def _papuans_bougainville_10j19():
             time=0, rate=m_AS_Bougainville, matrix_index=(pop["CHB"], pop["Bougainville"])
         ),
         msprime.MigrationRateChange(
+            time=0, rate=m_AS_Bougainville, matrix_index=(pop["Bougainville"], pop["CHB"])
+        ),
+        msprime.MigrationRateChange(
             time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Papuan"], pop["Bougainville"])
+        ),
+        msprime.MigrationRateChange(
+            time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Bougainville"], pop["Papuan"])
         ),
         msprime.MigrationRateChange(
             time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["CHB"], pop["Bougainville"])
@@ -1933,9 +1939,6 @@ def _papuans_bougainville_10j19_simple():
         msprime.MassMigration(
             time=T_Papuan_Bougainville_split, source=pop["Bougainville"], destination=pop["Papuan"]
         ),
-        msprime.PopulationParametersChange(
-            time=T_Papuan_Bougainville_split, initial_size=N_Bougainville, population_id=pop["Bougainville"]
-        ),
         msprime.MassMigration(
             time=T_EU_AS_split, source=pop["CEU"], destination=pop["CHB"]
         ),
@@ -1984,7 +1987,13 @@ def _papuans_bougainville_10j19_simple():
             time=0, rate=m_AS_Bougainville, matrix_index=(pop["CHB"], pop["Bougainville"])
         ),
         msprime.MigrationRateChange(
+            time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Bougainville"], pop["CHB"])
+        ),
+        msprime.MigrationRateChange(
             time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Papuan"], pop["Bougainville"])
+        ),
+        msprime.MigrationRateChange(
+            time=0, rate=m_Papuan_Bougainville, matrix_index=(pop["Bougainville"], pop["Papuan"])
         ),
         msprime.MigrationRateChange(
             time=T_Papuan_Bougainville_split, rate=0, matrix_index=(pop["CHB"], pop["Bougainville"])
